@@ -1,3 +1,5 @@
+using Pkg
+Pkg.add("SymbolicRegression")
 using SymbolicRegression
 using Random
 
