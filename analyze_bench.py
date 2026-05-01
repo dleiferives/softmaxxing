@@ -532,6 +532,50 @@ def n_distinct_ops(n: Node) -> int:
     visit(n)
     return len(ops)
 
+# ── CSE (common subexpression) features ──────────────────────────────────────
+
+def subtree_fingerprint(n: Node) -> str:
+    """Canonical string for a subtree — commutative ops are sorted so
+    (a + b) and (b + a) hash identically."""
+    if n.kind == 'var': return f'v:{n.value}'
+    if n.kind == 'num': return f'c:{round(n.value, 5)}'
+    if n.kind == 'func':
+        return f'f:{n.value}(' + ','.join(subtree_fingerprint(c) for c in n.children) + ')'
+    # binop
+    l, r = subtree_fingerprint(n.left), subtree_fingerprint(n.right)
+    if n.value in ('+', '*'):          # commutative: canonicalise order
+        l, r = sorted([l, r])
+    return f'b:{n.value}({l},{r})'
+
+def _collect_op_fingerprints(n: Node, fps: list[str], min_height: int) -> None:
+    """Recursively collect fingerprints of all subtrees with height >= min_height
+    that are rooted at an operator (not a bare variable or constant)."""
+    if n.kind in ('var', 'num'):
+        return
+    if height(n) >= min_height:
+        fps.append(subtree_fingerprint(n))
+    for c in n.children:
+        _collect_op_fingerprints(c, fps, min_height)
+
+def cse_counts(n: Node, min_height: int = 1) -> tuple[int, int]:
+    """Returns (n_reused_unique, n_total_extra_uses) for op subtrees
+    with height >= min_height.
+      n_reused_unique  — distinct fingerprints that appear more than once
+      n_total_extra    — sum of (count - 1) across all duplicated fingerprints
+    """
+    from collections import Counter
+    fps: list[str] = []
+    _collect_op_fingerprints(n, fps, min_height)
+    counts = Counter(fps)
+    dupes = {fp: c for fp, c in counts.items() if c > 1}
+    return len(dupes), sum(c - 1 for c in dupes.values())
+
+def n_cse_unique(n: Node, min_height: int = 1) -> int:
+    return cse_counts(n, min_height)[0]
+
+def n_cse_extra(n: Node, min_height: int = 1) -> int:
+    return cse_counts(n, min_height)[1]
+
 
 # ── full feature extraction ───────────────────────────────────────────────────
 
@@ -743,6 +787,17 @@ def extract_features(eq: str) -> dict:
         uses_both_add_mul    = int(uses_both_add_and_mul(tree)),
         max_add_chain        = max_add_chain(tree),
         frac_internal_w_vars = frac_internal_with_vars(tree),
+
+        # CSE (common subexpression) — repeated operation subtrees
+        # height >= 1: any op-rooted subtree (e.g. x+m reused)
+        # height >= 2: at least two levels deep (more meaningful reuse)
+        cse1_unique  = n_cse_unique(tree, min_height=1),
+        cse1_extra   = n_cse_extra(tree,  min_height=1),
+        cse2_unique  = n_cse_unique(tree, min_height=2),
+        cse2_extra   = n_cse_extra(tree,  min_height=2),
+        # ratio of reused ops to total ops (how "self-similar" the expression is)
+        cse1_ratio   = n_cse_extra(tree, 1) / max(n_nodes(tree) - n_leaves(tree), 1),
+        cse2_ratio   = n_cse_extra(tree, 2) / max(n_nodes(tree) - n_leaves(tree), 1),
     )
 
     return {**regex_feats, **ast_feats}
