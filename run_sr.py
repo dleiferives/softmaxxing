@@ -70,7 +70,7 @@ if not load_model():
     model = PySRRegressor(
         niterations=100,
         elementwise_loss="loss(prediction, target) = abs(prediction - target)",
-        binary_operators=['+', '-', '*'],
+        binary_operators=['+', '-', '*', '>'],
         unary_operators=['abs', 'neg'],
         maxsize=20,
         warm_start=True,

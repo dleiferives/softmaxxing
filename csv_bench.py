@@ -27,6 +27,8 @@ def emit_data_header(rows: int) -> Path:
         f.write("#ifndef DATA_H\n")
         f.write("#define DATA_H\n\n")
         f.write(f"#include <cstddef>\n\n")
+        f.write(f"#define greater(a,b) (a > b)\n\n")
+        f.write(f"#define neg(a) (-a)\n\n")
         f.write("constexpr std::size_t N_ROWS = ")
         f.write(f"{rows};\n\n")
         f.write("constexpr struct { double m, s, x; } data[N_ROWS] = {\n")
@@ -90,6 +92,7 @@ def emit_baseline() -> Path:
 #include <chrono>
 #include <cstdio>
 #include "data.h"
+
 
 inline double baseline_predict(double m, double s, double x) {{
 double max_new = std::max(m, x);

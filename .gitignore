@@ -4,3 +4,4 @@
 /pysr_model.pkl
 /softmax_data_gen.py
 /softmax_incremental.csv
+/.csv_bench.py.swp
