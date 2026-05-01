@@ -13,5 +13,14 @@ cpu-direct dir:
 run-cuda-eval:
 	python3 eval_bench.py --all --seq 8128 --outer 500 --heads 128 --workers 12
 
+evolve:
+	cd evolve/assmcmcbly && make -j && ./assmcmcbly
+
+evolve-build:
+	cd evolve/assmcmcbly && make -j
+
+evolve-clean:
+	cd evolve/assmcmcbly && make clean
+
 @ls:
 	just --list
