@@ -1,0 +1,6 @@
+/outputs
+/model.pkl
+/pysr_fitting.py
+/pysr_model.pkl
+/softmax_data_gen.py
+/softmax_incremental.csv
