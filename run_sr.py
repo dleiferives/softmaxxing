@@ -2,20 +2,22 @@ import numpy as np
 import pandas as pd
 import time
 import signal
-import threading
 import atexit
 import pickle
 from pathlib import Path
 from pysr import PySRRegressor
 
-# Dataset (load if exists)
-dataset_file = Path('softmax_incremental.csv')
-if not dataset_file.exists():
-    print("Generating dataset...")
-    n_steps = 10000
-    data = []
-    m = s = 0.0
-    for _ in range(n_steps):
+# ── Config ────────────────────────────────────────────────────────────────────
+DATASET_SIZE  = 10_000
+REFRESH_EVERY = 10      # SR iterations between data refresh
+REFRESH_FRAC  = 0.20    # fraction replaced (None = full regen)
+SAVE_EVERY    = 100     # SR iterations between model saves
+model_file    = Path('model.pkl')
+# ─────────────────────────────────────────────────────────────────────────────
+
+def gen_chunk(n: int) -> pd.DataFrame:
+    data, m, s = [], 0.0, 0.0
+    for _ in range(n):
         x = np.random.randn()
         m_new = max(m, x)
         if m_new > m:
@@ -24,78 +26,56 @@ if not dataset_file.exists():
         s_new = s + np.exp(x - m)
         data.append([m, s, x, s_new])
         s = s_new
-    df = pd.DataFrame(data, columns=['m', 's', 'x', 's_new'])
-    df.to_csv(dataset_file, index=False)
-    print(f"✓ Dataset created: {len(df)} rows")
-else:
-    df = pd.read_csv(dataset_file)
-    print(f"✓ Dataset loaded: {len(df)} rows")
+    return pd.DataFrame(data, columns=['m', 's', 'x', 's_new'])
 
-model_file = Path('model.pkl')
-HOF_FILE = Path('hall_of_fame.csv')  # PySR auto-saves this during fit
-SAVE_INTERVAL = 3600  # 1h
+def refresh(df: pd.DataFrame) -> pd.DataFrame:
+    if REFRESH_FRAC is None:
+        return gen_chunk(DATASET_SIZE)
+    n_new = int(DATASET_SIZE * REFRESH_FRAC)
+    return pd.concat([df.iloc[n_new:], gen_chunk(n_new)], ignore_index=True)
+
 model = None
 
 def save_model():
-    """Save model via pickle."""
     if model is not None:
         with open(model_file, 'wb') as f:
             pickle.dump(model, f)
-        print(f"✓ Saved model.pkl at {time.strftime('%H:%M:%S')}")
+        print(f"✓ saved @ {time.strftime('%H:%M:%S')}")
 
-def load_model():
-    """Load model: prefer our pickle, fall back to PySR's auto-saved HOF pkl."""
+def load_model() -> bool:
     global model
-    # Check for PySR's auto-saved hall-of-fame pkl (written during fit)
-    hof_pkl = Path('hall_of_fame.pkl')
-    if model_file.exists():
-        with open(model_file, 'rb') as f:
-            model = pickle.load(f)
-        print("✓ Loaded model.pkl (will resume)")
-        return True
-    elif hof_pkl.exists():
-        # PySR writes this automatically — from_file() reconstructs the model
-        model = PySRRegressor.from_file(str(hof_pkl))
-        print("✓ Loaded hall_of_fame.pkl via from_file (will resume)")
-        return True
+    for path in [model_file, Path('hall_of_fame.pkl')]:
+        if path.exists():
+            model = (pickle.load(open(path, 'rb')) if path.suffix == '.pkl' and path == model_file
+                     else PySRRegressor.from_file(str(path)))
+            print(f"✓ resumed from {path}")
+            return True
     return False
 
-# Graceful exit
 signal.signal(signal.SIGINT, lambda s, f: (save_model(), exit(0)))
 atexit.register(save_model)
 
-# Create/load model
 if not load_model():
-    print("New PySR session...")
     model = PySRRegressor(
-        niterations=100,
+        niterations=1,          # ← 1 SR iteration per .fit() call
         elementwise_loss="loss(prediction, target) = abs(prediction - target)",
-        binary_operators=['+', '-', '*', '>'],
+        binary_operators=['+', '-', '*'],
         unary_operators=['abs', 'neg'],
         maxsize=20,
-        warm_start=True,
+        warm_start=True,        # ← state carries over between .fit() calls
         batching=True,
         batch_size=1000,
-        progress=True,
-        verbosity=1,
+        progress=False,         # too noisy at 1 iter/call
+        verbosity=0,
     )
 
-# Auto-save thread
-def auto_save():
-    while True:
-        time.sleep(SAVE_INTERVAL)
-        save_model()
+df = gen_chunk(DATASET_SIZE)
+print(f"✓ initial dataset: {len(df)} rows")
 
-threading.Thread(target=auto_save, daemon=True).start()
+for i in range(100_000):
+    model.fit(df[['m', 's', 'x']], df['s_new'])  # 1 SR iteration
 
-# Run!
-print("🚀 PySR fit starting/resuming...")
-model.fit(df[['m', 's', 'x']], df['s_new'])
-
-print("\n" + "=" * 60)
-print("BEST EQUATIONS:")
-print(model.equations_)
-print("=" * 60)
-
-save_model()
-print("✅ Done!")
+    if i % REFRESH_EVERY == 0 and i > 0:
+        df = refresh(df)
+        best = model.equations_.iloc[-1]
+        print(f"[iter {i:>6}] refreshed data | best loss={best['loss']:.4f} eq={best['equation']}")
