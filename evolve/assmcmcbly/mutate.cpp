@@ -94,12 +94,23 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
     Program m = src;
     if (m.num_chroms == 0) { append_random_chromosome(m, rng); return m; }
 
-    std::uniform_int_distribution<int> kind_d(0, 5);  // 0-4 existing + 5 = constant MCMC
+    // kind_d raw [0,9] maps to weighted cases:
+    //   0,1,2 -> 0  mutate one field    30%
+    //   3,4   -> 6  strip dead          20%
+    //   5     -> 5  MCMC constant       10%
+    //   6     -> 1  swap chromosomes    10%
+    //   7     -> 2  replace chromosome  10%
+    //   8     -> 4  remove chromosome   10%
+    //   9     -> 7  insert dep-split    10%
+    std::uniform_int_distribution<int> kind_d(0, 9);
     std::uniform_int_distribution<int> ci_d  (0, m.num_chroms - 1);
     std::uniform_int_distribution<int> op_d  (0, int(Op::COUNT) - 1);
     std::uniform_int_distribution<int> reg_d (0, Program::NUM_REGS - 1);
 
-    int kind = kind_d(rng);
+    int raw  = kind_d(rng);
+    int kind = (raw <= 2) ? 0 : (raw <= 4) ? 6 : (raw == 5) ? 5 :
+               (raw == 6) ? 1 : (raw == 7) ? 2 : (raw == 8) ? 4 : 7;
+
     int ci   = ci_d(rng);
     int cs   = m.chrom_start(ci);
     int clen = m.chrom_lens[ci];
@@ -107,9 +118,8 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
     bool live[Program::MAX_INSTRS];
     compute_dag(m, live);
 
-    switch (kind) {
-    case 0: { // mutate one instruction field, biased toward dead/soft instrs
-        if (clen == 0) break;
+    auto do_field_mutate = [&]() {
+        if (clen == 0) return;
         Instr& ins = m.instrs[cs + pick_instr(cs, clen, live, hardness, rng)];
         switch (std::uniform_int_distribution<int>(0, 4)(rng)) {
         case 0: ins.op   = Op(op_d(rng));          break;
@@ -118,6 +128,11 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
         case 3: ins.src2 = uint8_t(reg_d(rng));    break;
         case 4: ins.lit  = random_instr(rng).lit;  break;
         }
+    };
+
+    switch (kind) {
+    case 0: { // mutate one instruction field, biased toward dead/soft instrs
+        do_field_mutate();
         break;
     }
     case 1: { // swap two chromosomes (reorder)
@@ -159,23 +174,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
         m.num_instrs     = uint16_t(m.num_instrs + delta);
         break;
     }
-    case 3: { // insert a new random chromosome after ci
-        if (m.num_chroms >= Program::MAX_CHROMOSOMES) break;
-        int new_len = std::uniform_int_distribution<int>(1, Program::MAX_CHROM_LEN)(rng);
-        if (m.num_instrs + new_len > Program::MAX_INSTRS) break;
-
-        int ins_at = cs + clen;
-        int tail   = int(m.num_instrs) - ins_at;
-        memmove(m.instrs + ins_at + new_len, m.instrs + ins_at, tail * sizeof(Instr));
-        for (int i = 0; i < new_len; i++)
-            m.instrs[ins_at + i] = random_instr(rng);
-        memmove(m.chrom_lens + ci + 2, m.chrom_lens + ci + 1,
-                (m.num_chroms - ci - 1) * sizeof(uint8_t));
-        m.chrom_lens[ci + 1] = uint8_t(new_len);
-        m.num_chroms++;
-        m.num_instrs = uint16_t(m.num_instrs + new_len);
-        break;
-    }
     case 4: { // remove chromosome ci
         if (m.num_chroms <= 1) break;
         int tail = int(m.num_instrs) - cs - clen;
@@ -186,34 +184,105 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
         m.num_instrs = uint16_t(m.num_instrs - clen);
         break;
     }
-    case 5: { // constant MCMC: find all LOADI/LOADF in the whole program,
-              // pick one, run short MCMC on its value; fallback to kind 0 if < 1% gain
+    case 5: { // MCMC constant: pick a LOADI/LOADF, run short MCMC on its value
         int const_idxs[Program::MAX_INSTRS];
         int n_consts = 0;
         for (int i = 0; i < m.num_instrs; i++)
             if (m.instrs[i].op == Op::LOADI || m.instrs[i].op == Op::LOADF)
                 const_idxs[n_consts++] = i;
 
-        if (n_consts == 0) goto fallback_kind0;  // no constants → fall through
+        if (n_consts == 0) { do_field_mutate(); break; }
 
         {
             int target = const_idxs[std::uniform_int_distribution<int>(0, n_consts - 1)(rng)];
             double base = fitness(m);
-            if (!mcmc_constant(m, target, base, rng)) goto fallback_kind0;
+            if (!mcmc_constant(m, target, base, rng)) do_field_mutate();
         }
         break;
+    }
+    case 6: { // strip dead instructions: pick a dead instr and remove it, up to 5 times
+        int n = std::uniform_int_distribution<int>(0, 5)(rng);
+        for (int pass = 0; pass < n; pass++) {
+            compute_dag(m, live);
+            int dead[Program::MAX_INSTRS];
+            int ndead = 0;
+            for (int i = 0; i < m.num_instrs; i++)
+                if (!live[i]) dead[ndead++] = i;
+            if (ndead == 0) break;
 
-    fallback_kind0:
-        if (clen == 0) break;
-        {
-            Instr& ins = m.instrs[cs + pick_instr(cs, clen, live, hardness, rng)];
-            switch (std::uniform_int_distribution<int>(0, 4)(rng)) {
-            case 0: ins.op   = Op(op_d(rng));          break;
-            case 1: ins.dst  = uint8_t(reg_d(rng));    break;
-            case 2: ins.src1 = uint8_t(reg_d(rng));    break;
-            case 3: ins.src2 = uint8_t(reg_d(rng));    break;
-            case 4: ins.lit  = random_instr(rng).lit;  break;
+            int idx = dead[std::uniform_int_distribution<int>(0, ndead - 1)(rng)];
+
+            // find which chromosome owns idx
+            int dk = 0;
+            for (int k = 0; k < m.num_chroms; k++) {
+                int ks = m.chrom_start(k);
+                if (idx >= ks && idx < ks + m.chrom_lens[k]) { dk = k; break; }
             }
+
+            int tail = int(m.num_instrs) - idx - 1;
+            memmove(m.instrs + idx, m.instrs + idx + 1, tail * sizeof(Instr));
+            m.num_instrs--;
+            m.chrom_lens[dk]--;
+
+            if (m.chrom_lens[dk] == 0) {
+                if (m.num_chroms > 1) {
+                    memmove(m.chrom_lens + dk, m.chrom_lens + dk + 1,
+                            (m.num_chroms - dk - 1) * sizeof(uint8_t));
+                    m.num_chroms--;
+                } else {
+                    // last chromosome emptied — seed with one random instruction
+                    m.instrs[0]     = random_instr(rng);
+                    m.chrom_lens[0] = 1;
+                    m.num_instrs    = 1;
+                }
+            }
+        }
+        break;
+    }
+    case 7: { // insert one instruction that splits a live dependency edge
+        if (m.num_instrs >= Program::MAX_INSTRS) break;
+
+        // pick a live instruction P whose output register R we will intercept
+        int live_idxs[Program::MAX_INSTRS];
+        int nlive = 0;
+        for (int i = 0; i < m.num_instrs; i++)
+            if (live[i]) live_idxs[nlive++] = i;
+        if (nlive == 0) break;
+
+        int P = live_idxs[std::uniform_int_distribution<int>(0, nlive - 1)(rng)];
+        uint8_t R = m.instrs[P].dst % Program::NUM_REGS;
+
+        // new instruction reads R as src1 and writes back to R,
+        // so all downstream readers of R now see its (possibly transformed) output
+        Instr ni = random_instr(rng);
+        ni.src1 = R;
+        ni.dst  = R;
+
+        // find chromosome containing P
+        int pk = 0;
+        for (int k = 0; k < m.num_chroms; k++) {
+            int ks = m.chrom_start(k);
+            if (P >= ks && P < ks + m.chrom_lens[k]) { pk = k; break; }
+        }
+
+        int insert_at = P + 1;
+        int tail = int(m.num_instrs) - insert_at;
+        memmove(m.instrs + insert_at + 1, m.instrs + insert_at, tail * sizeof(Instr));
+        m.instrs[insert_at] = ni;
+        m.num_instrs++;
+
+        if (m.chrom_lens[pk] < Program::MAX_CHROM_LEN) {
+            m.chrom_lens[pk]++;
+        } else if (m.num_chroms < Program::MAX_CHROMOSOMES) {
+            // chromosome is full — open a new 1-instruction chromosome after pk
+            memmove(m.chrom_lens + pk + 2, m.chrom_lens + pk + 1,
+                    (m.num_chroms - pk - 1) * sizeof(uint8_t));
+            m.chrom_lens[pk + 1] = 1;
+            m.num_chroms++;
+        } else {
+            // no room anywhere — revert
+            memmove(m.instrs + insert_at, m.instrs + insert_at + 1, tail * sizeof(Instr));
+            m.num_instrs--;
         }
         break;
     }
