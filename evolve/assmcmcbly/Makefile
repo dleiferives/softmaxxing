@@ -3,7 +3,7 @@ CXXFLAGS := -O2 -std=c++17 -Wall -Wextra
 TARGET   := assmcmcbly
 DEBUG    := -g
 
-SRCS := execute.cpp fitness.cpp random.cpp dag.cpp mutate.cpp hardening.cpp population.cpp print.cpp main.cpp
+SRCS := execute.cpp fitness.cpp jit.cpp random.cpp dag.cpp mutate.cpp hardening.cpp population.cpp print.cpp main.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 $(TARGET): $(OBJS)

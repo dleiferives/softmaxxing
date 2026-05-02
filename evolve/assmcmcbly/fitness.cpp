@@ -1,5 +1,5 @@
 #include "fitness.hpp"
-#include "execute.hpp"
+#include "jit.hpp"
 #include "dag.hpp"
 #include <cmath>
 #include <vector>
@@ -14,9 +14,10 @@ static std::vector<float> make_test_inputs() {
 const std::vector<float> TEST_INPUTS = make_test_inputs();
 
 double fitness(const Program& prog) {
+    JitProgram jit = jit_compile(prog);
     double err = 0.0;
     for (float x : TEST_INPUTS) {
-        float got    = execute(prog, x);
+        float got    = jit.fn(x);
         float target = 1.0f / std::sqrt(x);
         if (!std::isfinite(got)) { err += 1e6; continue; }
         double re = (double(got) - double(target)) / double(target);
