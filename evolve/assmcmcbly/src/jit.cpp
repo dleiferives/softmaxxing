@@ -153,19 +153,28 @@ struct E {
 
         // ── float compares → 0/1 ─────────────────────────────────────────
         case Op::FLT:
+            // ucomiss: CF=1 if less OR unordered(NaN); PF=1 if unordered.
+            // setb AND setnp: result=1 only when less AND ordered (NaN < x == false).
+            // No xor before ucomiss — xor overwrites flags before setcc can read them.
             load_xmm0(s1);
             load_xmm1(s2);
-            b(0x0F); b(0x2E); b(0xC1); // ucomiss xmm0, xmm1  (CF=1 if xmm0 < xmm1)
-            b(0x31); b(0xC0);           // xor eax, eax
-            setcc_eax(0x92);            // setb al
+            b(0x0F); b(0x2E); b(0xC1); // ucomiss xmm0, xmm1
+            b(0x0F); b(0x92); b(0xC0); // setb  al  (CF=1: less or unordered)
+            b(0x0F); b(0x9B); b(0xC1); // setnp cl  (PF=0: ordered, not NaN)
+            b(0x22); b(0xC1);           // and al, cl
+            b(0x0F); b(0xB6); b(0xC0); // movzx eax, al
             store_eax(d);
             break;
         case Op::FEQ:
+            // ucomiss: ZF=1 if equal OR unordered(NaN); PF=1 if unordered.
+            // sete AND setnp: result=1 only when equal AND ordered (NaN == x == false).
             load_xmm0(s1);
             load_xmm1(s2);
-            b(0x0F); b(0x2E); b(0xC1); // ucomiss xmm0, xmm1  (ZF=1 if equal)
-            b(0x31); b(0xC0);           // xor eax, eax
-            setcc_eax(0x94);            // sete al
+            b(0x0F); b(0x2E); b(0xC1); // ucomiss xmm0, xmm1
+            b(0x0F); b(0x94); b(0xC0); // sete  al  (ZF=1: equal or unordered)
+            b(0x0F); b(0x9B); b(0xC1); // setnp cl  (PF=0: ordered, not NaN)
+            b(0x22); b(0xC1);           // and al, cl
+            b(0x0F); b(0xB6); b(0xC0); // movzx eax, al
             store_eax(d);
             break;
 
