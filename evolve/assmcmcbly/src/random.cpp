@@ -1,4 +1,5 @@
 #include "random.hpp"
+#include "innovation.hpp"
 
 Instr random_instr(std::mt19937& rng) {
     static std::uniform_int_distribution<int>      op_d (0, int(Op::COUNT) - 1);
@@ -10,7 +11,8 @@ Instr random_instr(std::mt19937& rng) {
     ins.dst   = uint8_t(reg_d(rng));
     ins.src1  = uint8_t(reg_d(rng));
     ins.src2  = uint8_t(reg_d(rng));
-    ins.lit.i = int32_t(any32(rng));  // fully random — let evolution find magic constants
+    ins.lit.i = int32_t(any32(rng));
+    ins.innov = next_innovation();
     return ins;
 }
 

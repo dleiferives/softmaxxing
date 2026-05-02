@@ -6,3 +6,8 @@
 /softmax_incremental.csv
 /.csv_bench.py.swp
 /evolve/assmcmcbly/fitness.o
+/evolve/assmcmcbly/.mutate.cpp.swp
+/evolve/assmcmcbly/.program.hpp.swp
+/research/.asm_gen.md.swp
+/scripts/plot_approx.png
+/.run_rs_HROCH.py.swp

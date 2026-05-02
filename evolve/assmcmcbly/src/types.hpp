@@ -37,9 +37,10 @@ enum class Op : uint8_t {
 // ── Instruction ───────────────────────────────────────────────────────────────
 
 struct Instr {
-    Op      op   = Op::MOV;
-    uint8_t dst  = 0;
-    uint8_t src1 = 0;
-    uint8_t src2 = 0;
+    Op       op    = Op::MOV;
+    uint8_t  dst   = 0;
+    uint8_t  src1  = 0;
+    uint8_t  src2  = 0;
     union { int32_t i; float f; } lit = {};
+    uint32_t innov = 0;  // structural identity; preserved across field mutations
 };
