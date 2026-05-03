@@ -23,6 +23,7 @@ int main() {
                       << "  chroms=" << int(b.prog.num_chroms)
                       << "  instrs=" << b.prog.num_instrs
                       << "  species=" << pop.species.size()
+                      << "  stage=" << pop.curriculum_stage
                       << "  gstag=" << pop.global_stagnation
                       << (pop.hot_burst_remaining > 0 ? "  HOT" : "")
                       << "\n";

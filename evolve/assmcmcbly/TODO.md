@@ -21,3 +21,7 @@ The register-state signature is the right starting point — cheap, fits the exi
 ## Dreaming
 
 Two flavors. Fast pre-screen: evaluate mutation candidates on ~10 points before committing to full 100-point fitness eval, skip obvious duds early. Deep local search: periodically run MCMC on entire instruction sequences (not just literal constants) for elite individuals, find good neighborhoods before handing back to evolution.
+
+## Runtime optimization
+
+For population that is going to be tested. Put their instruction strips next to each other. Make them load from mem at the start the value to use -> store r0 to index in array that corresponds to them. So we don't have to constantly be switching in and out of program scope yk. Should increase performance.

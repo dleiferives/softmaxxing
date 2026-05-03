@@ -6,6 +6,7 @@
 #include "innovation.hpp"
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <numeric>
 
@@ -275,4 +276,23 @@ void Population::step(std::mt19937& rng) {
 
     memcpy(indivs, next, sizeof(indivs));
     sort_pop();
+
+    // Curriculum advancement: when best fitness crosses the threshold, widen
+    // the test range to the next stage and recompute everyone's fitness.
+    if (curriculum_stage < N_CURRICULUM - 1 &&
+        indivs[0].fit < CURRICULUM_ADVANCE_THRESH) {
+        curriculum_stage++;
+        const auto& st = CURRICULUM[curriculum_stage];
+        set_curriculum_range(st.lo, st.hi);
+        for (int i = 0; i < SIZE; i++)
+            indivs[i].fit = fitness_and_cases(indivs[i].prog, indivs[i].case_err);
+        sort_pop();
+        // Reset global stagnation so hot-burst doesn't fire immediately
+        global_best_fit     = indivs[0].fit;
+        global_stagnation   = 0;
+        hot_burst_remaining = 0;
+        std::cout << "*** curriculum stage " << curriculum_stage
+                  << "  range=[" << st.lo << ", " << st.hi << "]"
+                  << "  best_fit=" << indivs[0].fit << "\n";
+    }
 }

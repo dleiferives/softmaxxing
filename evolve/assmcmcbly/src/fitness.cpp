@@ -10,14 +10,18 @@
 #  include "execute.hpp"
 #endif
 
-static std::vector<float> make_test_inputs() {
+static std::vector<float> make_test_inputs(float lo, float hi) {
     std::vector<float> v(N_CASES);
     for (int i = 0; i < N_CASES; i++)
-        v[i] = std::pow(10.0f, -2.0f + 4.0f * float(i) / (N_CASES - 1));
+        v[i] = lo * std::pow(hi / lo, float(i) / (N_CASES - 1));
     return v;
 }
 
-const std::vector<float> TEST_INPUTS = make_test_inputs();
+std::vector<float> TEST_INPUTS = make_test_inputs(0.25f, 4.0f);  // curriculum stage 0
+
+void set_curriculum_range(float x_lo, float x_hi) {
+    TEST_INPUTS = make_test_inputs(x_lo, x_hi);
+}
 
 double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
 #ifdef USE_JIT

@@ -14,6 +14,8 @@ struct Individual {
     float    case_err[N_CASES] = {};
 };
 
+struct CurriculumStage { float lo, hi; };
+
 struct Population {
     static constexpr int    SIZE            = 128;
     static constexpr int    TOURNAMENT      = 4;
@@ -23,19 +25,31 @@ struct Population {
     // NEAT speciation parameters
     static constexpr double COMPAT_THRESH   = 2.0;
     static constexpr int    MAX_SPECIES     = 16;
-    static constexpr int    STAG_LIMIT      = 100;  // gens without improvement → species culled
+    static constexpr int    STAG_LIMIT      = 100;
 
     // Global stagnation → hot-burst exploration
-    static constexpr int   GLOBAL_STAG_THRESHOLD = 1000; // gens of no global improvement before burst
-    static constexpr int   HOT_BURST_DURATION    = 500;  // how long the burst lasts
-    static constexpr float HOT_EPSILON_SCALE     = 50.0f;// lexicase epsilon multiplier during burst
-    static constexpr int   HOT_STAG_MULTIPLIER   = 10;  // species stag limit multiplier during burst
+    static constexpr int   GLOBAL_STAG_THRESHOLD = 1000;
+    static constexpr int   HOT_BURST_DURATION    = 500;
+    static constexpr float HOT_EPSILON_SCALE     = 50.0f;
+    static constexpr int   HOT_STAG_MULTIPLIER   = 10;
+
+    // Curriculum: progressively widen the test input range
+    static constexpr CurriculumStage CURRICULUM[] = {
+        { 0.25f,   4.0f    },   // stage 0 — starting range
+        { 0.0625f, 16.0f   },   // stage 1
+        { 0.01f,   100.0f  },   // stage 2
+        { 0.001f,  1000.0f },   // stage 3
+        { 1e-4f,   1e4f    },   // stage 4 — final
+    };
+    static constexpr int    N_CURRICULUM              = 5;
+    static constexpr double CURRICULUM_ADVANCE_THRESH = 0.01;
 
     Individual           indivs[SIZE];
-    int                  generation        = 0;
-    double               global_best_fit   = std::numeric_limits<double>::max();
-    int                  global_stagnation = 0;
+    int                  generation          = 0;
+    double               global_best_fit     = std::numeric_limits<double>::max();
+    int                  global_stagnation   = 0;
     int                  hot_burst_remaining = 0;
+    int                  curriculum_stage    = 0;
     std::vector<Species> species;
 
     void init     (std::mt19937& rng);
