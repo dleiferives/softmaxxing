@@ -1,4 +1,5 @@
 #include "jit.hpp"
+#include "dag.hpp"
 #include <sys/mman.h>
 #include <cstring>
 #include <cstdint>
@@ -300,9 +301,11 @@ JitProgram jit_compile(const Program& prog) {
     //   movss [rsp+0], xmm0  ; F3 0F 11 44 24 00
     e.store_xmm0(0);
 
-    // ── Instructions ─────────────────────────────────────────────────────
+    // ── Instructions (dead instructions skipped) ─────────────────────────
+    bool live[Program::MAX_INSTRS];
+    compute_dag(prog, live);
     for (int i = 0; i < prog.num_instrs; ++i)
-        e.emit_instr(prog.instrs[i]);
+        if (live[i]) e.emit_instr(prog.instrs[i]);
 
     // ── Epilogue ──────────────────────────────────────────────────────────
     // movss xmm0, [rsp+0]   ; return reg[0] as float

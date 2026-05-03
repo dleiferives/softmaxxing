@@ -1,6 +1,7 @@
 #include "fitness.hpp"
 #include "dag.hpp"
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #ifdef USE_JIT
@@ -23,6 +24,9 @@ double fitness(const Program& prog) {
     JitProgram jit = jit_compile(prog);
 #endif
     double err = 0.0;
+    float out_min =  std::numeric_limits<float>::infinity();
+    float out_max = -std::numeric_limits<float>::infinity();
+
     for (float x : TEST_INPUTS) {
 #ifdef USE_JIT
         float got = jit.fn(x);
@@ -31,18 +35,20 @@ double fitness(const Program& prog) {
 #endif
         float target = 1.0f / std::sqrt(x);
         if (!std::isfinite(got)) { err += 1e6; continue; }
+
+        if (got < out_min) out_min = got;
+        if (got > out_max) out_max = got;
+
         double re = (double(got) - double(target)) / double(target);
         err += re * re;
     }
     double msre = err / TEST_INPUTS.size();
 
-    // Penalise dead instructions: programs bloated with unreachable code score worse.
-    bool live[Program::MAX_INSTRS];
-    int live_count = compute_dag(prog, live);
-    int dead_count = prog.num_instrs - live_count;
-    if (prog.num_instrs > 0) {
-        double dead_ratio = double(dead_count) / double(prog.num_instrs);
-        msre = msre * (1.0 + 0.1 * dead_ratio);
+    // Penalise constant-output programs that ignore x.
+    // 1/sqrt(x) spans [0.1, 10] over the test range; any program that produces
+    // a non-trivially x-dependent output will have range >> 0.01.
+    if (std::isfinite(out_min) && out_max - out_min < 0.01f) {
+        msre += 10.0;
     }
 
     return msre;

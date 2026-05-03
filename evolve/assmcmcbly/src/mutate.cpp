@@ -54,7 +54,8 @@ static bool mcmc_constant(Program& prog, int instr_idx,
 
     std::uniform_real_distribution<double> uniform01(0.0, 1.0);
 
-    uint32_t cur_val  = prog.instrs[instr_idx].lit.i;
+    uint32_t orig_val = prog.instrs[instr_idx].lit.i;
+    uint32_t cur_val  = orig_val;
     double   cur_fit  = base_fitness;
     uint32_t best_val = cur_val;
     double   best_fit = cur_fit;
@@ -81,12 +82,11 @@ static bool mcmc_constant(Program& prog, int instr_idx,
 
     prog.instrs[instr_idx].lit.i = int32_t(best_val);
 
-    if (best_fit < base_fitness * 0.99) {
-        // >= 1% improvement: keep it
+    if (best_fit < base_fitness) {
         return true;
     }
-    // No meaningful improvement: restore original and signal fallback
-    prog.instrs[instr_idx].lit.i = int32_t(cur_val);
+    // No improvement: restore original and signal fallback
+    prog.instrs[instr_idx].lit.i = int32_t(orig_val);
     return false;
 }
 
@@ -94,22 +94,26 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
     Program m = src;
     if (m.num_chroms == 0) { append_random_chromosome(m, rng); return m; }
 
-    // kind_d raw [0,9] maps to weighted cases:
-    //   0,1,2 -> 0  mutate one field    30%
-    //   3,4   -> 6  strip dead          20%
-    //   5     -> 5  MCMC constant       10%
-    //   6     -> 1  swap chromosomes    10%
-    //   7     -> 2  replace chromosome  10%
-    //   8     -> 4  remove chromosome   10%
-    //   9     -> 7  insert dep-split    10%
-    std::uniform_int_distribution<int> kind_d(0, 9);
+    // kind_d raw [0,19] maps to weighted cases:
+    //   0..3  -> 0  field mutate        20%
+    //   4..5  -> 6  strip dead          10%
+    //   6..7  -> 5  MCMC constant       10%
+    //   8     -> 1  swap chromosomes     5%
+    //   9     -> 2  replace chromosome   5%
+    //   10    -> 4  remove chromosome    5%
+    //   11..12-> 7  insert dep-split    10%
+    //   13..15-> 8  add instruction     15%
+    //   16..17-> 9  split chromosome    10%
+    //   18..19->10  merge chromosome    10%
+    std::uniform_int_distribution<int> kind_d(0, 19);
     std::uniform_int_distribution<int> ci_d  (0, m.num_chroms - 1);
     std::uniform_int_distribution<int> op_d  (0, int(Op::COUNT) - 1);
     std::uniform_int_distribution<int> reg_d (0, Program::NUM_REGS - 1);
 
     int raw  = kind_d(rng);
-    int kind = (raw <= 2) ? 0 : (raw <= 4) ? 6 : (raw == 5) ? 5 :
-               (raw == 6) ? 1 : (raw == 7) ? 2 : (raw == 8) ? 4 : 7;
+    int kind = (raw <= 3) ? 0 : (raw <= 5) ? 6  : (raw <= 7) ? 5  :
+               (raw == 8) ? 1 : (raw == 9) ? 2  : (raw == 10) ? 4 :
+               (raw <= 12) ? 7 : (raw <= 15) ? 8 : (raw <= 17) ? 9 : 10;
 
     int ci   = ci_d(rng);
     int cs   = m.chrom_start(ci);
@@ -286,40 +290,96 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng) 
         }
         break;
     }
+    case 8: { // add instruction: insert a random new instruction at a random position in ci
+        if (m.num_instrs >= Program::MAX_INSTRS) break;
+        if (clen >= Program::MAX_CHROM_LEN) break;
+
+        // insert at a random position within the chromosome [cs, cs+clen]
+        int pos = cs + std::uniform_int_distribution<int>(0, clen)(rng);
+        int tail = int(m.num_instrs) - pos;
+        memmove(m.instrs + pos + 1, m.instrs + pos, tail * sizeof(Instr));
+
+        Instr ni = random_instr(rng);  // gets fresh innovation number
+        // bias src1 toward the live register written just before insertion point
+        if (pos > 0 && live[pos - 1])
+            ni.src1 = m.instrs[pos - 1].dst % Program::NUM_REGS;
+        m.instrs[pos] = ni;
+        m.num_instrs++;
+        m.chrom_lens[ci]++;
+        break;
+    }
+    case 9: { // split chromosome: cut ci at a random internal point into two chromosomes
+        if (clen < 2) break;
+        if (m.num_chroms >= Program::MAX_CHROMOSOMES) break;
+
+        int cut = std::uniform_int_distribution<int>(1, clen - 1)(rng);
+        int lo_len = cut;
+        int hi_len = clen - cut;
+
+        // shift chrom_lens to open a slot after ci
+        memmove(m.chrom_lens + ci + 2, m.chrom_lens + ci + 1,
+                (m.num_chroms - ci - 1) * sizeof(uint8_t));
+        m.chrom_lens[ci]     = uint8_t(lo_len);
+        m.chrom_lens[ci + 1] = uint8_t(hi_len);
+        m.num_chroms++;
+        // instrs array is unchanged — the split is purely in chrom_lens
+        break;
+    }
+    case 10: { // merge chromosome: join ci and ci+1 into one if they fit
+        if (m.num_chroms < 2) break;
+        int cj = (ci + 1) % m.num_chroms;  // wrap so last chrom can merge with first
+        if (cj == 0) { ci = m.num_chroms - 1; cj = 0; }  // prefer ci < cj
+        if (ci > cj) std::swap(ci, cj);
+
+        int ci_len = m.chrom_lens[ci];
+        int cj_len = m.chrom_lens[cj];
+        if (ci_len + cj_len > Program::MAX_CHROM_LEN) break;
+
+        // cj must immediately follow ci for a simple merge (no instr move needed
+        // when they are already adjacent, which they are since we picked cj=ci+1)
+        m.chrom_lens[ci] = uint8_t(ci_len + cj_len);
+        memmove(m.chrom_lens + cj, m.chrom_lens + cj + 1,
+                (m.num_chroms - cj - 1) * sizeof(uint8_t));
+        m.num_chroms--;
+        break;
+    }
     }
     return m;
 }
 
-Program crossover(const Program& a, const Program& b, std::mt19937& rng) {
+// Innovation-aligned crossover (NEAT-style).
+// The fitter parent's structure (instruction order + chromosome boundaries) is the
+// backbone.  At each instruction, if the weaker parent carries the same innovation
+// number, we have a 40% chance to swap that instruction's fields in — keeping the
+// innovation number itself unchanged so genomic distance stays correct.
+// Excess/disjoint genes from the weaker parent are discarded; structural growth
+// is handled by the dedicated growth mutations instead.
+Program crossover(const Program& a, double fa, const Program& b, double fb, std::mt19937& rng) {
     if (a.num_chroms == 0) return b;
     if (b.num_chroms == 0) return a;
 
-    int cut_a = std::uniform_int_distribution<int>(0, a.num_chroms)(rng);
-    int cut_b = std::uniform_int_distribution<int>(0, b.num_chroms)(rng);
+    const Program& fitter = (fa <= fb) ? a : b;
+    const Program& weaker = (fa <= fb) ? b : a;
 
-    Program child = {};
+    Program child = fitter;  // start with fitter parent's structure
 
-    int a_instrs = a.chrom_start(cut_a);
-    memcpy(child.instrs,     a.instrs,     a_instrs * sizeof(Instr));
-    memcpy(child.chrom_lens, a.chrom_lens, cut_a    * sizeof(uint8_t));
-    child.num_chroms = uint8_t(cut_a);
-    child.num_instrs = uint16_t(a_instrs);
+    std::uniform_real_distribution<float> coin(0.0f, 1.0f);
 
-    int b_start  = b.chrom_start(cut_b);
-    int b_instrs = b.num_instrs - b_start;
-    int b_chroms = b.num_chroms - cut_b;
-    int total_instrs = child.num_instrs + b_instrs;
-    int total_chroms = child.num_chroms + b_chroms;
-
-    if (total_instrs <= Program::MAX_INSTRS && total_chroms <= Program::MAX_CHROMOSOMES) {
-        memcpy(child.instrs     + child.num_instrs,  b.instrs     + b_start, b_instrs * sizeof(Instr));
-        memcpy(child.chrom_lens + child.num_chroms,  b.chrom_lens + cut_b,   b_chroms * sizeof(uint8_t));
-        child.num_instrs = uint16_t(total_instrs);
-        child.num_chroms = uint8_t(total_chroms);
+    int nw = weaker.num_instrs;
+    for (int i = 0; i < child.num_instrs; i++) {
+        uint32_t innov = child.instrs[i].innov;
+        for (int j = 0; j < nw; j++) {
+            if (weaker.instrs[j].innov == innov) {
+                if (coin(rng) < 0.4f) {
+                    // swap all fields except innov
+                    Instr tmp        = weaker.instrs[j];
+                    tmp.innov        = innov;
+                    child.instrs[i]  = tmp;
+                }
+                break;
+            }
+        }
     }
-
-    if (child.num_chroms == 0)
-        append_random_chromosome(child, rng);
 
     return child;
 }

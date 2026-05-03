@@ -22,6 +22,7 @@ int main() {
                       << "  fit=" << b.fit
                       << "  chroms=" << int(b.prog.num_chroms)
                       << "  instrs=" << b.prog.num_instrs
+                      << "  species=" << pop.species.size()
                       << "\n";
         }
 
