@@ -81,8 +81,88 @@ void Population::eval_individual(Individual& ni) {
 }
 
 void Population::sort_pop() {
-    std::sort(indivs, indivs + SIZE,
-              [](const Individual& a, const Individual& b){ return a.fit < b.fit; });
+    const int N = SIZE;
+
+    // ── Non-dominated sort ─────────────────────────────────────────────────
+    // Two objectives: fit (minimize), num_instrs (minimize).
+    int dom_count[N];         // # of individuals that dominate me
+    int dom_by[N][N];         // individuals that I dominate
+    int dom_by_n[N];
+    memset(dom_count, 0, sizeof(dom_count));
+    memset(dom_by_n,  0, sizeof(dom_by_n));
+
+    for (int i = 0; i < N; i++) {
+        for (int j = i + 1; j < N; j++) {
+            double fi = indivs[i].fit,           fj = indivs[j].fit;
+            int    li = indivs[i].prog.num_instrs, lj = indivs[j].prog.num_instrs;
+            bool i_le = (fi <= fj && li <= lj), i_lt = (fi < fj || li < lj);
+            bool j_le = (fj <= fi && lj <= li), j_lt = (fj < fi || lj < li);
+            if (i_le && i_lt) { dom_by[i][dom_by_n[i]++] = j; dom_count[j]++; }
+            else if (j_le && j_lt) { dom_by[j][dom_by_n[j]++] = i; dom_count[i]++; }
+        }
+    }
+
+    int current_front[N], next_front[N];
+    int cf_n = 0;
+    for (int i = 0; i < N; i++) {
+        indivs[i].rank = -1;
+        if (dom_count[i] == 0) { indivs[i].rank = 0; current_front[cf_n++] = i; }
+    }
+
+    int cur_rank = 0;
+    while (cf_n > 0) {
+        int nf_n = 0;
+        for (int fi = 0; fi < cf_n; fi++) {
+            int i = current_front[fi];
+            for (int k = 0; k < dom_by_n[i]; k++) {
+                int j = dom_by[i][k];
+                if (--dom_count[j] == 0) {
+                    indivs[j].rank = cur_rank + 1;
+                    next_front[nf_n++] = j;
+                }
+            }
+        }
+        cur_rank++;
+        memcpy(current_front, next_front, nf_n * sizeof(int));
+        cf_n = nf_n;
+    }
+
+    // ── Crowding distance ──────────────────────────────────────────────────
+    for (int i = 0; i < N; i++) indivs[i].crowding_dist = 0.0;
+
+    for (int r = 0; r <= cur_rank; r++) {
+        int members[N], nm = 0;
+        for (int i = 0; i < N; i++)
+            if (indivs[i].rank == r) members[nm++] = i;
+        if (nm == 0) continue;
+        if (nm <= 2) {
+            for (int k = 0; k < nm; k++) indivs[members[k]].crowding_dist = 1e18;
+            continue;
+        }
+
+        auto accum_obj = [&](auto get_val) {
+            std::sort(members, members + nm,
+                      [&](int a, int b){ return get_val(a) < get_val(b); });
+            indivs[members[0]].crowding_dist    = 1e18;
+            indivs[members[nm-1]].crowding_dist = 1e18;
+            double range = get_val(members[nm-1]) - get_val(members[0]);
+            if (range > 1e-12) {
+                for (int k = 1; k < nm - 1; k++) {
+                    if (indivs[members[k]].crowding_dist >= 1e17) continue;
+                    indivs[members[k]].crowding_dist +=
+                        (get_val(members[k+1]) - get_val(members[k-1])) / range;
+                }
+            }
+        };
+        accum_obj([&](int i) -> double { return indivs[i].fit; });
+        accum_obj([&](int i) -> double { return double(indivs[i].prog.num_instrs); });
+    }
+
+    // ── Sort: rank ASC, crowding_dist DESC ─────────────────────────────────
+    std::sort(indivs, indivs + N, [](const Individual& a, const Individual& b) {
+        if (a.rank != b.rank) return a.rank < b.rank;
+        return a.crowding_dist > b.crowding_dist;
+    });
 }
 
 void Population::init(std::mt19937& rng, const ProblemDef& p) {
@@ -153,8 +233,16 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
     int n = int(s.members.size());
     if (n == 1) return s.members[0];
 
-    int cand[SIZE], n_cand = n;
-    for (int i = 0; i < n; i++) cand[i] = s.members[i];
+    // Only consider members with the best (lowest) rank in this species.
+    int min_rank = std::numeric_limits<int>::max();
+    for (int i = 0; i < n; i++)
+        min_rank = std::min(min_rank, indivs[s.members[i]].rank);
+
+    int cand[SIZE], n_cand = 0;
+    for (int i = 0; i < n; i++)
+        if (indivs[s.members[i]].rank == min_rank) cand[n_cand++] = s.members[i];
+
+    if (n_cand == 1) return cand[0];
 
     int cases[N_CASES];
     std::iota(cases, cases + N_CASES, 0);
@@ -189,7 +277,12 @@ void Population::step(std::mt19937& rng) {
     generation++;
 
     {
-        double cur_best = indivs[0].fit;
+        // Use min MSRE across rank-0 individuals as the scalar progress signal.
+        double cur_best = std::numeric_limits<double>::max();
+        for (int i = 0; i < SIZE; i++) {
+            if (indivs[i].rank > 0) break;  // rank-0 are at the front after sort
+            cur_best = std::min(cur_best, indivs[i].fit);
+        }
         if (cur_best < global_best_fit * 0.999) {
             global_best_fit     = cur_best;
             global_stagnation   = 0;
@@ -244,13 +337,13 @@ void Population::step(std::mt19937& rng) {
 
     int nsp = int(species.size());
 
-    // --- Score surviving species ---
+    // --- Score surviving species (rank-weighted: rank-0 member = weight 1, rank-k = 1/(k+1)) ---
     std::vector<double> scores(nsp, 0.0);
     double total_score = 0.0;
     for (int si = 0; si < nsp; si++) {
         const auto& s = species[si];
         for (int idx : s.members)
-            scores[si] += 1.0 / (indivs[idx].fit + 1e-10);
+            scores[si] += 1.0 / (1.0 + indivs[idx].rank);
         scores[si] /= double(s.members.size());
         total_score += scores[si];
     }
@@ -262,7 +355,7 @@ void Population::step(std::mt19937& rng) {
             for (int idx : species[si].members)
                 if (indivs[idx].fit < best_fit) { best_fit = indivs[idx].fit; best_si = si; }
         for (int idx : species[best_si].members)
-            scores[best_si] += 1.0 / (indivs[idx].fit + 1e-10);
+            scores[best_si] += 1.0 / (1.0 + indivs[idx].rank);
         scores[best_si] /= double(species[best_si].members.size());
         total_score = scores[best_si];
     }
@@ -309,8 +402,12 @@ void Population::step(std::mt19937& rng) {
     for (auto& s : species) {
         if (next_count >= SIZE || s.members.empty()) continue;
         int champ = s.members[0];
-        for (int idx : s.members)
-            if (indivs[idx].fit < indivs[champ].fit) champ = idx;
+        for (int idx : s.members) {
+            const Individual& ic = indivs[idx], &cc = indivs[champ];
+            if (ic.rank < cc.rank ||
+                (ic.rank == cc.rank && ic.crowding_dist > cc.crowding_dist))
+                champ = idx;
+        }
         next[next_count++] = indivs[champ];
         s.rep = indivs[champ].prog;
     }
@@ -355,8 +452,13 @@ void Population::step(std::mt19937& rng) {
     // Curriculum advancement: when best fitness crosses the threshold, widen
     // each input to its next stage and recompute everyone's fitness.
     int n_stages = problem_n_stages(*problem);
+    // Compute best MSRE on the rank-0 front for curriculum and reporting.
+    double front_best_msre = std::numeric_limits<double>::max();
+    for (int i = 0; i < SIZE && indivs[i].rank == 0; i++)
+        front_best_msre = std::min(front_best_msre, indivs[i].fit);
+
     if (curriculum_stage < n_stages - 1 &&
-        indivs[0].fit < problem->curriculum_advance_thresh) {
+        front_best_msre < problem->curriculum_advance_thresh) {
         curriculum_stage++;
         current_test_inputs = make_test_inputs(*problem, curriculum_stage, N_CASES);
 
@@ -367,7 +469,7 @@ void Population::step(std::mt19937& rng) {
         for (int i = 0; i < SIZE; i++)
             eval_individual(indivs[i]);
         sort_pop();
-        global_best_fit     = indivs[0].fit;
+        global_best_fit     = front_best_msre;
         global_stagnation   = 0;
         hot_burst_remaining = 0;
 
@@ -376,6 +478,6 @@ void Population::step(std::mt19937& rng) {
             auto [lo, hi] = problem->inputs[j].range_at(curriculum_stage);
             std::cout << "    input[" << j << "] range=[" << lo << ", " << hi << "]\n";
         }
-        std::cout << "    best_fit=" << indivs[0].fit << "\n";
+        std::cout << "    best_fit=" << front_best_msre << "\n";
     }
 }

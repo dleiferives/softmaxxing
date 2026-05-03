@@ -15,6 +15,8 @@ struct Individual {
     double   fit         = std::numeric_limits<double>::max();
     Hardness hardness    = {};
     float    case_err[N_CASES] = {};
+    int    rank          = 0;
+    double crowding_dist = 0.0;
 };
 
 struct Population {
@@ -69,7 +71,15 @@ struct Population {
     void assign_species();
     int  select_in_species(const Species& s, std::mt19937& rng) const;
 
-    const Individual& best() const { return indivs[0]; }
+    // Returns the rank-0 individual with the lowest MSRE (most accurate non-dominated program).
+    const Individual& best() const {
+        int bi = 0;
+        for (int i = 1; i < SIZE; i++) {
+            if (indivs[i].rank > 0) break;
+            if (indivs[i].fit < indivs[bi].fit) bi = i;
+        }
+        return indivs[bi];
+    }
 
     static EvalKey program_hash(const Program& p);
     bool           eval_lru_get(EvalKey k, EvalEntry& out);
