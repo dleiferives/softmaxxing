@@ -3,6 +3,7 @@
 #include "hardening.hpp"
 #include "speciation.hpp"
 #include "fitness.hpp"
+#include <cstring>
 #include <limits>
 #include <list>
 #include <random>
@@ -24,7 +25,6 @@ struct Population {
     static constexpr int    HARDEN_INTERVAL = 100;
 
     // NEAT speciation parameters
-    // COMPAT_THRESH is for neat_distance (structural, not behavioral) — tune if needed.
     static constexpr double COMPAT_THRESH    = 2.0;
     static constexpr int    MAX_SPECIES      = 16;
     static constexpr int    STAG_LIMIT       = 800;
@@ -36,12 +36,31 @@ struct Population {
     static constexpr float HOT_EPSILON_SCALE   = 50.0f;
     static constexpr int   HOT_STAG_MULTIPLIER = 1;
 
-    // LRU eval cache — avoids re-evaluating programs the population rediscovers
+    // LRU eval cache
     static constexpr int EVAL_LRU_SIZE = 16384;
+
+    // Novelty frontier parameters
+    static constexpr int   ARCHIVE_MAX          = 200;
+    static constexpr int   FRONTIER_MAX         = 64;
+    static constexpr int   FRONTIER_K           = 5;
+    static constexpr float FRONTIER_SAMPLE_RATE = 0.85f;
 
     struct EvalEntry {
         double fit;
         float  case_err[N_CASES];
+    };
+
+    struct ArchiveEntry {
+        float fp[N_BEH];
+        float fitness;
+    };
+
+    struct FrontierEntry {
+        Program  prog;
+        Hardness hardness;
+        float    fitness;
+        float    novelty;
+        float    priority;
     };
 
     using EvalKey     = uint64_t;
@@ -54,10 +73,11 @@ struct Population {
     int                          global_stagnation   = 0;
     int                          hot_burst_remaining = 0;
     int                          curriculum_stage    = 0;
-    std::unordered_set<uint32_t> novelty_seen;
     EvalLRUList                  eval_lru_list;
     EvalLRUMap                   eval_lru_map;
     std::vector<Species>         species;
+    std::vector<ArchiveEntry>    novelty_archive;
+    std::vector<FrontierEntry>   frontier;
 
     const ProblemDef*  problem             = nullptr;
     std::vector<float> current_test_inputs;
@@ -74,6 +94,10 @@ struct Population {
     static EvalKey program_hash(const Program& p);
     bool           eval_lru_get(EvalKey k, EvalEntry& out);
     void           eval_lru_put(EvalKey k, const EvalEntry& e);
+    void           eval_individual(Individual& ni, bool penalize_length = true);
 
-    void eval_individual(Individual& ni, bool penalize_length = true);
+    float compute_novelty(const float fp[N_BEH]) const;
+    void  add_to_frontier(const Program& prog, const Hardness& hardness,
+                          float fitness, const float fp[N_BEH]);
+    int   sample_frontier_idx(std::mt19937& rng) const;
 };
