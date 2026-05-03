@@ -313,7 +313,7 @@ void Population::step(std::mt19937& rng) {
             float fp[N_BEH];
             compute_fingerprint(child, fp, *problem);
             uint32_t h = behavior_hash(fp);
-            for (int attempt = 0; novelty_seen.count(h) && attempt < 512; attempt++) {
+            for (int attempt = 0; novelty_seen.count(h) && attempt < 40960; attempt++) {
                 child = mutate(child, parent_hardness, rng, *problem, current_test_inputs);
                 compute_fingerprint(child, fp, *problem);
                 h = behavior_hash(fp);
@@ -348,7 +348,7 @@ void Population::step(std::mt19937& rng) {
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
-            eval_individual(ni, !cache_active);
+            eval_individual(ni, true); //!cache_active);
         }
     }
 
@@ -362,7 +362,7 @@ void Population::step(std::mt19937& rng) {
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
-        eval_individual(ni, !cache_active);
+        eval_individual(ni, true); //!cache_active);
     }
 
     memcpy(indivs, next, sizeof(indivs));
