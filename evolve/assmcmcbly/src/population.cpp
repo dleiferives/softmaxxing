@@ -4,6 +4,7 @@
 #include "random.hpp"
 #include "hardening.hpp"
 #include "innovation.hpp"
+#include "dag.hpp"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -24,18 +25,17 @@ static uint32_t behavior_hash(const float fp[N_BEH]) {
 Population::EvalKey Population::program_hash(const Program& p) {
     uint64_t h = 14695981039346656037ULL;
     auto mix = [&](uint8_t b) { h ^= b; h *= 1099511628211ULL; };
-    mix(p.num_chroms);
-    mix(uint8_t(p.num_instrs));
-    mix(uint8_t(p.num_instrs >> 8));
-    for (int k = 0; k < p.num_chroms; k++)
-        mix(p.chrom_lens[k]);
-    for (int i = 0; i < p.num_instrs; i++) {
-        const Instr& ins = p.instrs[i];
-        mix(uint8_t(ins.op));
-        mix(ins.dst);
-        mix(ins.src1);
-        mix(ins.src2);
-        uint32_t lit; __builtin_memcpy(&lit, &ins.lit, sizeof(lit));
+    mix(uint8_t(p.n_nodes));
+    mix(uint8_t(p.n_nodes >> 8));
+    mix(uint8_t(p.n_inputs));
+    mix(uint8_t(p.output_node));
+    mix(uint8_t(p.output_node >> 8));
+    for (int i = p.n_inputs; i < p.n_nodes; i++) {
+        const Node& nd = p.nodes[i];
+        mix(uint8_t(nd.op));
+        mix(uint8_t(nd.src1)); mix(uint8_t(nd.src1 >> 8));
+        mix(uint8_t(nd.src2)); mix(uint8_t(nd.src2 >> 8));
+        uint32_t lit; __builtin_memcpy(&lit, &nd.lit, sizeof(lit));
         mix(lit & 0xFF); mix((lit >> 8) & 0xFF);
         mix((lit >> 16) & 0xFF); mix((lit >> 24) & 0xFF);
     }
@@ -73,7 +73,8 @@ void Population::eval_individual(Individual& ni, bool penalize_length) {
         ni.fit = entry.fit;
         std::memcpy(ni.case_err, entry.case_err, sizeof(ni.case_err));
     } else {
-        ni.fit = fitness_and_cases(ni.prog, ni.case_err, *problem, current_test_inputs, penalize_length);
+        ni.fit = fitness_and_cases(ni.prog, ni.case_err, *problem,
+                                   current_test_inputs, penalize_length);
         if (penalize_length) {
             entry.fit = ni.fit;
             std::memcpy(entry.case_err, ni.case_err, sizeof(entry.case_err));
@@ -84,37 +85,32 @@ void Population::eval_individual(Individual& ni, bool penalize_length) {
 
 void Population::sort_pop() {
     std::sort(indivs, indivs + SIZE, [](const Individual& a, const Individual& b) {
-        double ka = a.fit + 1e-6 * a.prog.num_instrs;
-        double kb = b.fit + 1e-6 * b.prog.num_instrs;
+        double ka = a.fit + 1e-6 * a.prog.n_nodes;
+        double kb = b.fit + 1e-6 * b.prog.n_nodes;
         return ka < kb;
     });
 }
 
-void Population::init(std::mt19937& rng, const ProblemDef& p) {
-    (void)rng;
-    problem = &p;
+void Population::init(std::mt19937& /*rng*/, const ProblemDef& p) {
+    problem          = &p;
     curriculum_stage = 0;
-
-    // Stage 0: first curriculum entry if any, otherwise full range.
     current_test_inputs = make_test_inputs(p, 0, N_CASES);
+    mutation_bandit.reset();
 
-    Program seed = {};
-    Instr&  si   = seed.instrs[0];
-    si.op    = Op::LOADI;
-    si.dst   = 0;
-    si.src1  = 0;
-    si.src2  = 0;
-    si.lit.i = 0;
-    si.innov = next_innovation();
-    seed.chrom_lens[0] = 1;
-    seed.num_chroms    = 1;
-    seed.num_instrs    = 1;
+    // Seed: n_inputs input terminals + one LOADF 0.0 output node
+    Program seed     = {};
+    seed.n_inputs    = uint16_t(p.n_inputs);
+    seed.n_nodes     = uint16_t(p.n_inputs + 1);
+    Node& fn         = seed.nodes[p.n_inputs];
+    fn.op            = Op::LOADF;
+    fn.lit.f         = 0.0f;
+    fn.innov         = next_innovation();
+    seed.output_node = uint16_t(p.n_inputs);
 
     Individual seed_ind;
     seed_ind.prog = seed;
     eval_individual(seed_ind);
-    for (auto& ind : indivs)
-        ind = seed_ind;
+    for (auto& ind : indivs) ind = seed_ind;
     sort_pop();
 
     species.clear();
@@ -136,7 +132,8 @@ void Population::assign_species() {
             if (d < best_dist) { best_dist = d; best_si = si; }
         }
 
-        bool can_create = (int(species.size()) < MAX_SPECIES) && (best_dist >= COMPAT_THRESH);
+        bool can_create = (int(species.size()) < MAX_SPECIES) &&
+                          (best_dist >= COMPAT_THRESH);
         if (can_create) {
             Species ns;
             ns.rep      = indivs[i].prog;
@@ -187,15 +184,14 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
         }
     }
 
-    // Among surviving candidates, prefer the shortest program.
-    // If there's a tie in length, pick uniformly among the tied shortest.
+    // Prefer programs with fewer total nodes (includes inactive — proxy for size)
     int min_len = std::numeric_limits<int>::max();
     for (int i = 0; i < n_cand; i++)
-        min_len = std::min(min_len, int(indivs[cand[i]].prog.num_instrs));
+        min_len = std::min(min_len, int(indivs[cand[i]].prog.n_nodes));
 
     int short_cand[SIZE], n_short = 0;
     for (int i = 0; i < n_cand; i++)
-        if (int(indivs[cand[i]].prog.num_instrs) == min_len)
+        if (int(indivs[cand[i]].prog.n_nodes) == min_len)
             short_cand[n_short++] = cand[i];
 
     return short_cand[std::uniform_int_distribution<int>(0, n_short - 1)(rng)];
@@ -204,6 +200,7 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
 void Population::step(std::mt19937& rng) {
     generation++;
 
+    // ── Global stagnation & hot-burst ─────────────────────────────────────────
     {
         double cur_best = indivs[0].fit;
         if (cur_best < global_best_fit * 0.999) {
@@ -211,6 +208,7 @@ void Population::step(std::mt19937& rng) {
             global_stagnation   = 0;
             hot_burst_remaining = 0;
             novelty_seen.clear();
+            mutation_bandit.reset();
         } else {
             global_stagnation++;
         }
@@ -218,12 +216,14 @@ void Population::step(std::mt19937& rng) {
             global_stagnation % GSTAG_HOT_TRIGGER == 0 &&
             hot_burst_remaining == 0) {
             hot_burst_remaining = HOT_BURST_DURATION;
+            mutation_bandit.reset();
         }
         if (hot_burst_remaining > 0) hot_burst_remaining--;
     }
 
     assign_species();
 
+    // ── Hardening ─────────────────────────────────────────────────────────────
     if (generation % HARDEN_INTERVAL == 0) {
         for (const auto& s : species) {
             if (s.members.empty()) continue;
@@ -235,20 +235,19 @@ void Population::step(std::mt19937& rng) {
         }
     }
 
-    // --- Stagnation update ---
+    // ── Species stagnation update ─────────────────────────────────────────────
     int eff_stag_limit = (hot_burst_remaining > 0)
                        ? STAG_LIMIT * HOT_STAG_MULTIPLIER
                        : STAG_LIMIT;
 
     for (auto& s : species) {
         double best = std::numeric_limits<double>::max();
-        for (int idx : s.members)
-            best = std::min(best, indivs[idx].fit);
+        for (int idx : s.members) best = std::min(best, indivs[idx].fit);
         if (best < s.best_fit * 0.999) { s.best_fit = best; s.stagnation = 0; }
         else s.stagnation++;
     }
 
-    // --- Cull stagnant species; always keep the one containing indivs[0] (global best) ---
+    // ── Cull stagnant species; always keep species containing indivs[0] ───────
     species.erase(
         std::remove_if(species.begin(), species.end(),
             [&](const Species& s) {
@@ -260,7 +259,7 @@ void Population::step(std::mt19937& rng) {
 
     int nsp = int(species.size());
 
-    // --- Score surviving species ---
+    // ── Score surviving species ───────────────────────────────────────────────
     std::vector<double> scores(nsp, 0.0);
     double total_score = 0.0;
     for (int si = 0; si < nsp; si++) {
@@ -276,7 +275,9 @@ void Population::step(std::mt19937& rng) {
         double best_fit = std::numeric_limits<double>::max();
         for (int si = 0; si < nsp; si++)
             for (int idx : species[si].members)
-                if (indivs[idx].fit < best_fit) { best_fit = indivs[idx].fit; best_si = si; }
+                if (indivs[idx].fit < best_fit) {
+                    best_fit = indivs[idx].fit; best_si = si;
+                }
         for (int idx : species[best_si].members)
             scores[best_si] += 1.0 / (indivs[idx].fit + 1e-10);
         scores[best_si] /= double(species[best_si].members.size());
@@ -313,8 +314,10 @@ void Population::step(std::mt19937& rng) {
             float fp[N_BEH];
             compute_fingerprint(child, fp, *problem);
             uint32_t h = behavior_hash(fp);
-            for (int attempt = 0; novelty_seen.count(h) && attempt < 40960; attempt++) {
-                child = mutate(child, parent_hardness, rng, *problem, current_test_inputs);
+            for (int attempt = 0; novelty_seen.count(h) && attempt < 512; attempt++) {
+                int fkind = mutation_bandit.select(rng);
+                child = mutate(child, parent_hardness, fkind, rng,
+                               *problem, current_test_inputs);
                 compute_fingerprint(child, fp, *problem);
                 h = behavior_hash(fp);
             }
@@ -322,6 +325,7 @@ void Population::step(std::mt19937& rng) {
         }
     };
 
+    // ── Elites: one champion per species ──────────────────────────────────────
     for (auto& s : species) {
         if (next_count >= SIZE || s.members.empty()) continue;
         int champ = s.members[0];
@@ -331,14 +335,20 @@ void Population::step(std::mt19937& rng) {
         s.rep = indivs[champ].prog;
     }
 
+    // ── Offspring ─────────────────────────────────────────────────────────────
     for (int si = 0; si < nsp && next_count < SIZE; si++) {
         const auto& s = species[si];
         if (s.members.empty()) continue;
         for (int j = 0; j < offspring[si] && next_count < SIZE; j++) {
             int p = select_in_species(s, rng);
+            double parent_fit = indivs[p].fit;
             Program child;
+            int mut_kind = -1;
+
             if (int(s.members.size()) == 1 || coin(rng) < MUT_RATE) {
-                child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
+                mut_kind = mutation_bandit.select(rng);
+                child = mutate(indivs[p].prog, indivs[p].hardness,
+                               mut_kind, rng, *problem, current_test_inputs);
             } else {
                 int q = select_in_species(s, rng);
                 child = crossover(indivs[p].prog, indivs[p].fit,
@@ -348,40 +358,50 @@ void Population::step(std::mt19937& rng) {
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
-            eval_individual(ni, true); //!cache_active);
+            eval_individual(ni, !cache_active);
+
+            if (mut_kind >= 0) {
+                double reward = std::max(0.0, parent_fit - ni.fit);
+                mutation_bandit.update(mut_kind, reward);
+            }
         }
     }
 
+    // ── Fill remaining slots ──────────────────────────────────────────────────
     while (next_count < SIZE) {
         int si = int(std::uniform_int_distribution<int>(0, nsp - 1)(rng));
         const auto& s = species[si];
         if (s.members.empty()) continue;
         int p = select_in_species(s, rng);
-        Program child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
+        double parent_fit = indivs[p].fit;
+        int mut_kind = mutation_bandit.select(rng);
+        Program child = mutate(indivs[p].prog, indivs[p].hardness,
+                               mut_kind, rng, *problem, current_test_inputs);
         finalize_child(child, indivs[p].hardness);
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
-        eval_individual(ni, true); //!cache_active);
+        eval_individual(ni, !cache_active);
+        double reward = std::max(0.0, parent_fit - ni.fit);
+        mutation_bandit.update(mut_kind, reward);
     }
 
     memcpy(indivs, next, sizeof(indivs));
     sort_pop();
 
-    // Curriculum advancement: when best fitness crosses the threshold, widen
-    // each input to its next stage and recompute everyone's fitness.
+    // ── Curriculum advancement ────────────────────────────────────────────────
     int n_stages = problem_n_stages(*problem);
     if (curriculum_stage < n_stages - 1 &&
         indivs[0].fit < problem->curriculum_advance_thresh) {
         curriculum_stage++;
         current_test_inputs = make_test_inputs(*problem, curriculum_stage, N_CASES);
 
-        // LRU entries are stale (different test range) — clear before reeval.
         eval_lru_list.clear();
         eval_lru_map.clear();
         novelty_seen.clear();
-        for (int i = 0; i < SIZE; i++)
-            eval_individual(indivs[i]);
+        mutation_bandit.reset();
+
+        for (int i = 0; i < SIZE; i++) eval_individual(indivs[i]);
         sort_pop();
         global_best_fit     = indivs[0].fit;
         global_stagnation   = 0;

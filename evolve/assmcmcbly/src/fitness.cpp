@@ -57,9 +57,12 @@ double fitness_and_cases(const Program& prog,
 
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
-	
-    if (penalize_length)
-        msre += msre * 0.01 * prog.num_instrs;
+
+    if (penalize_length) {
+        bool live[Program::MAX_NODES];
+        int nlive = compute_live(prog, live);
+        msre += msre * 0.01 * nlive;
+    }
     return msre;
 }
 

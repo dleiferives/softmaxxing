@@ -15,19 +15,26 @@ void compute_fingerprint(const Program& p, float out[N_BEH], const ProblemDef& p
 }
 
 double neat_distance(const Program& a, const Program& b) {
-    int na = a.num_instrs, nb = b.num_instrs;
-    if (na == 0 && nb == 0) return 0.0;
-    if (na == 0 || nb == 0) return 1.0;
+    // Only compare function nodes (skip input terminals)
+    int na = int(a.n_nodes) - int(a.n_inputs);
+    int nb = int(b.n_nodes) - int(b.n_inputs);
+    if (na <= 0 && nb <= 0) return 0.0;
+    if (na <= 0 || nb <= 0) return 1.0;
 
-    // Sort instruction indices by innovation number for alignment.
-    int idx_a[Program::MAX_INSTRS], idx_b[Program::MAX_INSTRS];
-    for (int k = 0; k < na; k++) idx_a[k] = k;
-    for (int k = 0; k < nb; k++) idx_b[k] = k;
-    std::sort(idx_a, idx_a + na, [&](int x, int y){ return a.instrs[x].innov < a.instrs[y].innov; });
-    std::sort(idx_b, idx_b + nb, [&](int x, int y){ return b.instrs[x].innov < b.instrs[y].innov; });
+    // Sort function node indices by innovation number for alignment.
+    int idx_a[Program::MAX_NODES], idx_b[Program::MAX_NODES];
+    for (int k = 0; k < na; k++) idx_a[k] = k + a.n_inputs;
+    for (int k = 0; k < nb; k++) idx_b[k] = k + b.n_inputs;
 
-    uint32_t max_a   = a.instrs[idx_a[na - 1]].innov;
-    uint32_t max_b   = b.instrs[idx_b[nb - 1]].innov;
+    std::sort(idx_a, idx_a + na, [&](int x, int y){
+        return a.nodes[x].innov < a.nodes[y].innov;
+    });
+    std::sort(idx_b, idx_b + nb, [&](int x, int y){
+        return b.nodes[x].innov < b.nodes[y].innov;
+    });
+
+    uint32_t max_a   = a.nodes[idx_a[na - 1]].innov;
+    uint32_t max_b   = b.nodes[idx_b[nb - 1]].innov;
     uint32_t min_max = std::min(max_a, max_b);
 
     int    i = 0, j = 0;
@@ -35,15 +42,14 @@ double neat_distance(const Program& a, const Program& b) {
     double match_diff_sum = 0.0;
 
     while (i < na || j < nb) {
-        uint32_t ia = (i < na) ? a.instrs[idx_a[i]].innov : UINT32_MAX;
-        uint32_t ib = (j < nb) ? b.instrs[idx_b[j]].innov : UINT32_MAX;
+        uint32_t ia = (i < na) ? a.nodes[idx_a[i]].innov : UINT32_MAX;
+        uint32_t ib = (j < nb) ? b.nodes[idx_b[j]].innov : UINT32_MAX;
 
         if (ia == ib) {
-            const Instr& ga = a.instrs[idx_a[i]];
-            const Instr& gb = b.instrs[idx_b[j]];
+            const Node& ga = a.nodes[idx_a[i]];
+            const Node& gb = b.nodes[idx_b[j]];
             double d = (ga.op != gb.op) ? 1.0 : 0.0;
             if (ga.op == gb.op) {
-                // penalise literal difference for matching ops
                 uint32_t la, lb;
                 std::memcpy(&la, &ga.lit, 4);
                 std::memcpy(&lb, &gb.lit, 4);
@@ -63,6 +69,5 @@ double neat_distance(const Program& a, const Program& b) {
 
     int N = std::max(na, nb);
     double avg_diff = matching > 0 ? match_diff_sum / matching : 0.0;
-    // c1 * excess/N + c2 * disjoint/N + c3 * avg_matching_diff
     return 1.0 * excess / N + 1.0 * disjoint / N + 0.3 * avg_diff;
 }

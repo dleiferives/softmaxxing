@@ -3,6 +3,7 @@
 #include "hardening.hpp"
 #include "speciation.hpp"
 #include "fitness.hpp"
+#include "bandit.hpp"
 #include <limits>
 #include <list>
 #include <random>
@@ -12,8 +13,8 @@
 
 struct Individual {
     Program  prog;
-    double   fit         = std::numeric_limits<double>::max();
-    Hardness hardness    = {};
+    double   fit              = std::numeric_limits<double>::max();
+    Hardness hardness         = {};
     float    case_err[N_CASES] = {};
 };
 
@@ -24,10 +25,9 @@ struct Population {
     static constexpr int    HARDEN_INTERVAL = 100;
 
     // NEAT speciation parameters
-    // COMPAT_THRESH is for neat_distance (structural, not behavioral) — tune if needed.
-    static constexpr double COMPAT_THRESH    = 2.0;
-    static constexpr int    MAX_SPECIES      = 16;
-    static constexpr int    STAG_LIMIT       = 800;
+    static constexpr double COMPAT_THRESH   = 2.0;
+    static constexpr int    MAX_SPECIES     = 16;
+    static constexpr int    STAG_LIMIT      = 800;
 
     // Global stagnation → hot-burst exploration
     static constexpr int   GSTAG_HOT_TRIGGER   = 1000;
@@ -36,7 +36,7 @@ struct Population {
     static constexpr float HOT_EPSILON_SCALE   = 50.0f;
     static constexpr int   HOT_STAG_MULTIPLIER = 1;
 
-    // LRU eval cache — avoids re-evaluating programs the population rediscovers
+    // LRU eval cache
     static constexpr int EVAL_LRU_SIZE = 16384;
 
     struct EvalEntry {
@@ -58,11 +58,11 @@ struct Population {
     EvalLRUList                  eval_lru_list;
     EvalLRUMap                   eval_lru_map;
     std::vector<Species>         species;
+    Bandit                       mutation_bandit;
 
     const ProblemDef*  problem             = nullptr;
     std::vector<float> current_test_inputs;
 
-    // Takes ProblemDef by const-ref; stores pointer — caller must keep it alive.
     void init     (std::mt19937& rng, const ProblemDef& p);
     void step     (std::mt19937& rng);
     void sort_pop ();

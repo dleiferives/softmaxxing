@@ -5,18 +5,16 @@
 void Hardness::recompute(const Program& prog, double base_fitness,
                           const ProblemDef& problem,
                           const std::vector<float>& test_inputs) {
-    static const Instr NOOP = [](){
-        Instr i; i.op = Op::MOV;
-        i.dst = 15; i.src1 = 15; i.src2 = 0;
-        return i;
-    }();
-
-    for (int i = 0; i < prog.num_instrs; i++) {
+    // Ablate each function node by setting it to LOADF 0.0 and measuring
+    // how much fitness degrades.  Higher delta → node is more critical.
+    for (int i = prog.n_inputs; i < prog.n_nodes; i++) {
         Program tmp = prog;
-        tmp.instrs[i] = NOOP;
+        tmp.nodes[i].op    = Op::LOADF;
+        tmp.nodes[i].lit.f = 0.0f;
         double ablated = fitness(tmp, problem, test_inputs);
         scores[i] = float(std::max(0.0, ablated - base_fitness));
     }
-    for (int i = prog.num_instrs; i < Program::MAX_INSTRS; i++)
-        scores[i] = 0.0f;
+    // Input terminals and unused slots get zero hardness.
+    for (int i = 0; i < prog.n_inputs; i++)          scores[i] = 0.0f;
+    for (int i = prog.n_nodes; i < Program::MAX_NODES; i++) scores[i] = 0.0f;
 }

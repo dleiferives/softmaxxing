@@ -4,7 +4,7 @@
 #include <vector>
 
 struct Hardness {
-    float scores[Program::MAX_INSTRS] = {};
+    float scores[Program::MAX_NODES] = {};
 
     void recompute(const Program& prog, double base_fitness,
                    const ProblemDef& problem,

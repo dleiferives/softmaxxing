@@ -2,7 +2,7 @@ CXX      := g++
 BASE_FLAGS := -std=c++17 -Wall -Wextra -I src
 TARGET   := assmcmcbly
 
-USE_JIT ?= 1
+USE_JIT ?= 0
 ifeq ($(USE_JIT),1)
   BASE_FLAGS += -DUSE_JIT
 endif
@@ -20,7 +20,7 @@ PROFILE_FLAGS := -O2 -g -pg $(BASE_FLAGS)
 LIB_SRCS := src/problem.cpp src/execute.cpp src/jit.cpp src/fitness.cpp src/dag.cpp \
             src/random.cpp src/mutate.cpp src/hardening.cpp \
             src/population.cpp src/print.cpp src/innovation.cpp src/speciation.cpp \
-            src/codegen.cpp
+            src/codegen.cpp src/bandit.cpp
 LIB_OBJS         := $(LIB_SRCS:.cpp=.o)
 LIB_OBJS_DBG     := $(LIB_SRCS:.cpp=.dbg.o)
 LIB_OBJS_PROF    := $(LIB_SRCS:.cpp=.prof.o)

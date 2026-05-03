@@ -91,8 +91,8 @@ int main() {
         if (gen % 100 == 0) {
             std::cout << "gen=" << gen
                       << "  fit=" << best.fit
-                      << "  chroms=" << int(best.prog.num_chroms)
-                      << "  instrs=" << best.prog.num_instrs
+                      << "  nodes=" << best.prog.n_nodes
+                      << "  out=" << best.prog.output_node
                       << "  species=" << pop.species.size()
                       << "  stage=" << pop.curriculum_stage
                       << "  gstag=" << pop.global_stagnation

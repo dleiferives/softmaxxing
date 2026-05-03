@@ -1,5 +1,8 @@
 #include "print.hpp"
+#include "dag.hpp"
 #include <iostream>
+#include <iomanip>
+#include <cstring>
 
 const char* op_str(Op op) {
     switch (op) {
@@ -22,32 +25,45 @@ const char* op_str(Op op) {
 }
 
 void print_program(const Program& prog) {
-    for (int ci = 0; ci < prog.num_chroms; ci++) {
-        std::cout << "  [chrom " << ci << "]\n";
-        int cs = prog.chrom_start(ci);
-        for (int ii = 0; ii < prog.chrom_lens[ci]; ii++) {
-            const Instr& ins = prog.instrs[cs + ii];
-            std::cout << "    " << op_str(ins.op) << "  r" << int(ins.dst);
-            switch (ins.op) {
+    bool live[Program::MAX_NODES];
+    compute_live(prog, live);
+
+    std::cout << "  n_inputs=" << prog.n_inputs
+              << "  n_nodes="  << prog.n_nodes
+              << "  output=n"  << prog.output_node << "\n";
+
+    for (int i = 0; i < prog.n_nodes; i++) {
+        bool is_live = live[i];
+        std::cout << (is_live ? "   " : "  ~");
+        std::cout << "n" << i << " = ";
+
+        if (i < prog.n_inputs) {
+            std::cout << "INPUT[" << i << "]";
+        } else {
+            const Node& nd = prog.nodes[i];
+            std::cout << op_str(nd.op);
+            switch (nd.op) {
             case Op::LOADI:
-                std::cout << "  0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
+                std::cout << "(0x" << std::hex << uint32_t(nd.lit.i) << std::dec << ")";
                 break;
             case Op::LOADF:
-                std::cout << "  " << ins.lit.f;
+                std::cout << "(" << nd.lit.f << ")";
                 break;
             case Op::BNOT: case Op::LNOT: case Op::INEG: case Op::FNEG:
             case Op::ITF:  case Op::FTI:  case Op::MOV:
-                std::cout << "  r" << int(ins.src1);
+                std::cout << "(n" << nd.src1 << ")";
                 break;
-            default: // binary
-                std::cout << "  r" << int(ins.src1);
-                if (ins.src2 == Program::IMM_SRC)
-                    std::cout << "  #0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
+            default:
+                std::cout << "(n" << nd.src1 << ", ";
+                if (nd.src2 == Program::IMM_SRC)
+                    std::cout << "#0x" << std::hex << uint32_t(nd.lit.i) << std::dec;
                 else
-                    std::cout << "  r" << int(ins.src2);
+                    std::cout << "n" << nd.src2;
+                std::cout << ")";
                 break;
             }
-            std::cout << "\n";
         }
+        if (i == prog.output_node) std::cout << "  <-- output";
+        std::cout << "\n";
     }
 }

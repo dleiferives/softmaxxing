@@ -1,47 +1,38 @@
 #include "dag.hpp"
 #include <cstring>
 
-int compute_dag(const Program& prog, bool live[Program::MAX_INSTRS]) {
-    const int n = prog.num_instrs;
+int compute_live(const Program& prog, bool live[Program::MAX_NODES]) {
+    const int n = prog.n_nodes;
     memset(live, 0, n * sizeof(bool));
+    if (n == 0 || prog.output_node >= n) return 0;
 
-    // needed[r] = true if the current value of register r is needed by a
-    // downstream instruction or is the output.
-    bool needed[Program::NUM_REGS] = {};
-    needed[0] = true;  // r0 is the output
+    uint16_t stack[Program::MAX_NODES];
+    int top = 0;
+    stack[top++] = prog.output_node;
 
-    // Walk backwards: an instruction is live if its dst is currently needed.
-    // Once we mark it live, its src registers become needed.
-    for (int i = n - 1; i >= 0; i--) {
-        const Instr& ins = prog.instrs[i];
-        int dst = ins.dst % Program::NUM_REGS;
+    while (top > 0) {
+        uint16_t idx = stack[--top];
+        if (live[idx]) continue;
+        live[idx] = true;
 
-        if (!needed[dst]) continue;
+        // Input terminals have no upstream deps
+        if (idx < prog.n_inputs) continue;
 
-        live[i] = true;
+        const Node& nd = prog.nodes[idx];
 
-        // LOADI/LOADF/BNOT/LNOT/INEG/FNEG/ITF/FTI/MOV only use src1 (or neither)
-        switch (ins.op) {
-        case Op::LOADI:
-        case Op::LOADF:
-            // no register sources
-            break;
-        case Op::BNOT: case Op::LNOT: case Op::INEG: case Op::FNEG:
-        case Op::ITF:  case Op::FTI:  case Op::MOV:
-            needed[ins.src1 % Program::NUM_REGS] = true;
-            break;
-        default:
-            needed[ins.src1 % Program::NUM_REGS] = true;
-            if (ins.src2 != Program::IMM_SRC)
-                needed[ins.src2 % Program::NUM_REGS] = true;
-            break;
-        }
+        // Constant terminals have no upstream deps
+        if (nd.op == Op::LOADI || nd.op == Op::LOADF) continue;
 
-        // dst is satisfied by this instruction; clear the need so that an
-        // earlier write to the same register is not spuriously marked live.
-        // But only if this is the last write to dst before the end — we
-        // handle this by clearing and re-setting as we scan backwards.
-        needed[dst] = false;
+        // src1 is always used for function nodes
+        if (!live[nd.src1]) stack[top++] = nd.src1;
+
+        // src2 used for binary ops with a register operand
+        bool is_unary = (nd.op == Op::BNOT || nd.op == Op::LNOT ||
+                         nd.op == Op::INEG || nd.op == Op::FNEG ||
+                         nd.op == Op::ITF  || nd.op == Op::FTI  ||
+                         nd.op == Op::MOV);
+        if (!is_unary && nd.src2 != Program::IMM_SRC && !live[nd.src2])
+            stack[top++] = nd.src2;
     }
 
     int count = 0;

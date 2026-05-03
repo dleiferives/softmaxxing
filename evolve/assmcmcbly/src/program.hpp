@@ -1,30 +1,37 @@
 #pragma once
 #include "types.hpp"
 
-// ── Program ───────────────────────────────────────────────────────────────────
+// ── Node ──────────────────────────────────────────────────────────────────────
 //
-// Flat layout: instrs[0..num_instrs-1] run in order.
-// Chromosome boundaries live in chrom_lens[0..num_chroms-1].
-// Execution ignores chromosomes — they exist only for genetic ops.
+// One operation in the expression DAG.  The node's "output value" is identified
+// by its index in Program::nodes[].  DAG acyclicity is guaranteed by construction:
+// src1 < node_index, src2 < node_index (always).
+//
+// Layout convention in Program:
+//   nodes[0..n_inputs-1]   — implicit input terminals; evaluator fills them
+//                            from the input array; op field is ignored.
+//   nodes[n_inputs..n_nodes-1] — function nodes; op is meaningful.
+//
+// LOADI / LOADF nodes are constant terminals: src1/src2 unused, lit holds value.
+// Unary ops (BNOT LNOT INEG FNEG ITF FTI MOV) only consume src1.
+// IMM_SRC in src2: use lit.i as a 32-bit integer immediate (same as before).
+
+struct Node {
+    Op       op    = Op::MOV;
+    uint16_t src1  = 0;
+    uint16_t src2  = 0;
+    union { int32_t i; float f; } lit = {};
+    uint32_t innov = 0;  // structural identity; preserved across field mutations
+};
+
+// ── Program ───────────────────────────────────────────────────────────────────
 
 struct Program {
-    static constexpr int     NUM_REGS        = 16;
-    static constexpr int     MAX_CHROMOSOMES = 64;
-    // Sentinel in src2: use ins.lit.i as integer immediate instead of a register.
-    // Only valid for integer/bitwise/shift ops — not float ops.
-    static constexpr uint8_t IMM_SRC         = 0xFF;
-    static constexpr int MAX_CHROM_LEN   = 8;
-    static constexpr int MAX_INSTRS      = MAX_CHROMOSOMES * MAX_CHROM_LEN; // 512
+    static constexpr uint16_t MAX_NODES = 512;
+    static constexpr uint16_t IMM_SRC   = 0xFFFF;
 
-    Instr    instrs[MAX_INSTRS]          = {};
-    uint8_t  chrom_lens[MAX_CHROMOSOMES] = {};
-    uint8_t  num_chroms                  = 0;
-    uint16_t num_instrs                  = 0;
-
-    // O(num_chroms) — only called by genetic ops, not execution
-    int chrom_start(int ci) const {
-        int s = 0;
-        for (int j = 0; j < ci; j++) s += chrom_lens[j];
-        return s;
-    }
+    Node     nodes[MAX_NODES] = {};
+    uint16_t n_nodes          = 0;   // total allocated nodes (terminals + function nodes)
+    uint16_t n_inputs         = 0;   // first n_inputs nodes are implicit input terminals
+    uint16_t output_node      = 0;   // index of the node whose value is the program output
 };
