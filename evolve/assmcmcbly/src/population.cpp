@@ -10,7 +10,7 @@
 #include <limits>
 #include <numeric>
 
-// Hash a behavioral fingerprint into 32 bits for the novelty cache.
+// Hash a behavioral fingerprint into 32 bits for the novelty set.
 static uint32_t behavior_hash(const float fp[N_BEH]) {
     uint32_t h = 0x811c9dc5u;
     for (int i = 0; i < N_BEH; i++) {
@@ -20,6 +20,67 @@ static uint32_t behavior_hash(const float fp[N_BEH]) {
         h *= 0x01000193u;
     }
     return h;
+}
+
+// FNV-1a over {op, dst, src1, src2, lit} per instruction — skips innov so
+// structurally identical programs with different innovation numbers share entries.
+Population::EvalKey Population::program_hash(const Program& p) {
+    uint64_t h = 14695981039346656037ULL;
+    auto mix = [&](uint8_t b) { h ^= b; h *= 1099511628211ULL; };
+    mix(p.num_chroms);
+    mix(uint8_t(p.num_instrs));
+    mix(uint8_t(p.num_instrs >> 8));
+    for (int k = 0; k < p.num_chroms; k++)
+        mix(p.chrom_lens[k]);
+    for (int i = 0; i < p.num_instrs; i++) {
+        const Instr& ins = p.instrs[i];
+        mix(uint8_t(ins.op));
+        mix(ins.dst);
+        mix(ins.src1);
+        mix(ins.src2);
+        uint32_t lit; __builtin_memcpy(&lit, &ins.lit, sizeof(lit));
+        mix(lit & 0xFF); mix((lit >> 8) & 0xFF);
+        mix((lit >> 16) & 0xFF); mix((lit >> 24) & 0xFF);
+    }
+    return h;
+}
+
+bool Population::eval_lru_get(EvalKey k, EvalEntry& out) {
+    auto it = eval_lru_map.find(k);
+    if (it == eval_lru_map.end()) return false;
+    eval_lru_list.splice(eval_lru_list.begin(), eval_lru_list, it->second);
+    out = it->second->second;
+    return true;
+}
+
+void Population::eval_lru_put(EvalKey k, const EvalEntry& e) {
+    auto it = eval_lru_map.find(k);
+    if (it != eval_lru_map.end()) {
+        eval_lru_list.splice(eval_lru_list.begin(), eval_lru_list, it->second);
+        it->second->second = e;
+        return;
+    }
+    if (int(eval_lru_map.size()) >= EVAL_LRU_SIZE) {
+        auto last = std::prev(eval_lru_list.end());
+        eval_lru_map.erase(last->first);
+        eval_lru_list.erase(last);
+    }
+    eval_lru_list.emplace_front(k, e);
+    eval_lru_map[k] = eval_lru_list.begin();
+}
+
+void Population::eval_individual(Individual& ni) {
+    EvalKey k = program_hash(ni.prog);
+    EvalEntry entry;
+    if (eval_lru_get(k, entry)) {
+        ni.fit = entry.fit;
+        std::memcpy(ni.case_err, entry.case_err, sizeof(ni.case_err));
+    } else {
+        ni.fit = fitness_and_cases(ni.prog, ni.case_err);
+        entry.fit = ni.fit;
+        std::memcpy(entry.case_err, ni.case_err, sizeof(entry.case_err));
+        eval_lru_put(k, entry);
+    }
 }
 
 void Population::sort_pop() {
@@ -47,7 +108,7 @@ void Population::init(std::mt19937& rng) {
 
     Individual seed_ind;
     seed_ind.prog = seed;
-    seed_ind.fit  = fitness_and_cases(seed, seed_ind.case_err);
+    eval_individual(seed_ind);
     for (auto& ind : indivs)
         ind = seed_ind;
     sort_pop();
@@ -147,7 +208,7 @@ void Population::step(std::mt19937& rng) {
             global_best_fit     = cur_best;
             global_stagnation   = 0;
             hot_burst_remaining = 0;
-            eval_cache.clear();
+            novelty_seen.clear();
         } else {
             global_stagnation++;
         }
@@ -244,17 +305,20 @@ void Population::step(std::mt19937& rng) {
 
     bool cache_active = (global_stagnation >= GSTAG_ENABLE_CACHE);
 
-    // If cache is active: check offspring behavioral hash; if already seen,
-    // apply one more mutation to push it somewhere new, then record the hash.
+    // If novelty cache is active: keep mutating until the offspring lands on a
+    // behaviorally unseen fingerprint. Cap at 16 attempts to avoid spinning forever
+    // (e.g. if the mutation space is locally exhausted).
     auto finalize_child = [&](Program& child, const Hardness& parent_hardness) {
         if (cache_active) {
             float fp[N_BEH];
             compute_fingerprint(child, fp);
             uint32_t h = behavior_hash(fp);
-            if (eval_cache.count(h))
+            for (int attempt = 0; novelty_seen.count(h) && attempt < 16; attempt++) {
                 child = mutate(child, parent_hardness, rng);
-            compute_fingerprint(child, fp);
-            eval_cache.insert(behavior_hash(fp));
+                compute_fingerprint(child, fp);
+                h = behavior_hash(fp);
+            }
+            novelty_seen.insert(h);
         }
     };
 
@@ -287,7 +351,7 @@ void Population::step(std::mt19937& rng) {
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
-            ni.fit      = fitness_and_cases(child, ni.case_err);
+            eval_individual(ni);
         }
     }
 
@@ -302,7 +366,7 @@ void Population::step(std::mt19937& rng) {
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
-        ni.fit      = fitness_and_cases(child, ni.case_err);
+        eval_individual(ni);
     }
 
     memcpy(indivs, next, sizeof(indivs));
@@ -315,14 +379,16 @@ void Population::step(std::mt19937& rng) {
         curriculum_stage++;
         const auto& st = CURRICULUM[curriculum_stage];
         set_curriculum_range(st.lo, st.hi);
+        // LRU entries are now stale (different test range) — must clear before reeval
+        eval_lru_list.clear();
+        eval_lru_map.clear();
+        novelty_seen.clear();
         for (int i = 0; i < SIZE; i++)
-            indivs[i].fit = fitness_and_cases(indivs[i].prog, indivs[i].case_err);
+            eval_individual(indivs[i]);
         sort_pop();
-        // Reset global stagnation so hot-burst doesn't fire immediately
         global_best_fit     = indivs[0].fit;
         global_stagnation   = 0;
         hot_burst_remaining = 0;
-        eval_cache.clear();
         std::cout << "*** curriculum stage " << curriculum_stage
                   << "  range=[" << st.lo << ", " << st.hi << "]"
                   << "  best_fit=" << indivs[0].fit << "\n";

@@ -4,7 +4,9 @@
 #include "speciation.hpp"
 #include "fitness.hpp"
 #include <limits>
+#include <list>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -24,15 +26,15 @@ struct Population {
     static constexpr int    HARDEN_INTERVAL = 100;
 
     // NEAT speciation parameters
-    static constexpr double COMPAT_THRESH   = 2.0;
-    static constexpr int    MAX_SPECIES     = 16;
-    static constexpr int    STAG_LIMIT      = 100;
+    static constexpr double COMPAT_THRESH    = 2.0;
+    static constexpr int    MAX_SPECIES      = 16;
+    static constexpr int    STAG_LIMIT       = 100;
 
     // Global stagnation → hot-burst exploration
-    static constexpr int   GSTAG_HOT_TRIGGER    = 1000;
-    static constexpr int   GSTAG_ENABLE_CACHE   = 20000; // enable novelty cache after this many stagnant gens
-    static constexpr int   HOT_BURST_DURATION = 500;
-    static constexpr float HOT_EPSILON_SCALE  = 50.0f;
+    static constexpr int   GSTAG_HOT_TRIGGER   = 1000;
+    static constexpr int   GSTAG_ENABLE_CACHE  = 3000;
+    static constexpr int   HOT_BURST_DURATION  = 500;
+    static constexpr float HOT_EPSILON_SCALE   = 50.0f;
     static constexpr int   HOT_STAG_MULTIPLIER = 10;
 
     // Curriculum: progressively widen the test input range
@@ -46,14 +48,28 @@ struct Population {
     static constexpr int    N_CURRICULUM              = 5;
     static constexpr double CURRICULUM_ADVANCE_THRESH = 0.01;
 
-    Individual                    indivs[SIZE];
-    int                           generation          = 0;
-    double                        global_best_fit     = std::numeric_limits<double>::max();
-    int                           global_stagnation   = 0;
-    int                           hot_burst_remaining = 0;
-    int                           curriculum_stage    = 0;
-    std::unordered_set<uint32_t>  eval_cache;          // behavioral hashes seen since last improvement
-    std::vector<Species>          species;
+    // LRU eval cache — avoids re-evaluating programs the population rediscovers
+    static constexpr int EVAL_LRU_SIZE = 16384;
+
+    struct EvalEntry {
+        double fit;
+        float  case_err[N_CASES];
+    };
+
+    using EvalKey     = uint64_t;
+    using EvalLRUList = std::list<std::pair<EvalKey, EvalEntry>>;
+    using EvalLRUMap  = std::unordered_map<EvalKey, EvalLRUList::iterator>;
+
+    Individual                   indivs[SIZE];
+    int                          generation          = 0;
+    double                       global_best_fit     = std::numeric_limits<double>::max();
+    int                          global_stagnation   = 0;
+    int                          hot_burst_remaining = 0;
+    int                          curriculum_stage    = 0;
+    std::unordered_set<uint32_t> novelty_seen;  // behavioral hashes seen since last improvement
+    EvalLRUList                  eval_lru_list;
+    EvalLRUMap                   eval_lru_map;
+    std::vector<Species>         species;
 
     void init     (std::mt19937& rng);
     void step     (std::mt19937& rng);
@@ -62,4 +78,12 @@ struct Population {
     int  select_in_species(const Species& s, std::mt19937& rng) const;
 
     const Individual& best() const { return indivs[0]; }
+
+    // LRU eval cache helpers
+    static EvalKey program_hash(const Program& p);
+    bool           eval_lru_get(EvalKey k, EvalEntry& out);
+    void           eval_lru_put(EvalKey k, const EvalEntry& e);
+
+    // Evaluate prog, using LRU cache. Fills ni.fit and ni.case_err.
+    void eval_individual(Individual& ni);
 };
