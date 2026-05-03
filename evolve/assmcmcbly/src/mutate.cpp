@@ -115,7 +115,16 @@ static uint8_t pick_legal(const uint8_t legal[], int n_legal, std::mt19937& rng)
 Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                const ProblemDef& problem, const std::vector<float>& test_inputs) {
     Program m = src;
-    if (m.num_chroms == 0) { append_random_chromosome(m, rng); return m; }
+    if (m.num_chroms == 0) {
+        append_random_chromosome(m, rng);
+        for (int i = 0; i < m.num_instrs; i++) {
+            uint8_t legal[Program::NUM_REGS]; int n_legal;
+            legal_srcs_at(m, problem.n_inputs, i, legal, n_legal);
+            m.instrs[i].src1 = pick_legal(legal, n_legal, rng);
+            m.instrs[i].src2 = pick_legal(legal, n_legal, rng);
+        }
+        return m;
+    }
 
     // kind_d raw [0,19] maps to weighted cases:
     //   0..3  -> 0  field mutate        20%
@@ -236,17 +245,50 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         }
         break;
     }
-    case 6: { // strip dead instructions: pick a dead instr and remove it, up to 5 times
-        int n = std::uniform_int_distribution<int>(0, 2)(rng);
+    case 6: { // remove an instruction and patch its downstream uses
+        // Weight dead instructions 8x over live ones — still allows live removal
+        // since the substitution makes it graph-safe.
+        int n = std::uniform_int_distribution<int>(1, 3)(rng);
         for (int pass = 0; pass < n; pass++) {
+            if (m.num_instrs == 0) break;
             compute_dag(m, live);
-            int dead[Program::MAX_INSTRS];
-            int ndead = 0;
-            for (int i = 0; i < m.num_instrs; i++)
-                if (!live[i]) dead[ndead++] = i;
-            if (ndead == 0) break;
 
-            int idx = dead[std::uniform_int_distribution<int>(0, ndead - 1)(rng)];
+            float weights[Program::MAX_INSTRS];
+            float total_w = 0.0f;
+            for (int i = 0; i < m.num_instrs; i++) {
+                weights[i] = live[i] ? 1.0f : 8.0f;
+                total_w += weights[i];
+            }
+            float r = std::uniform_real_distribution<float>(0.0f, total_w)(rng);
+            int idx = m.num_instrs - 1;
+            for (int i = 0; i < m.num_instrs; i++) {
+                r -= weights[i]; if (r <= 0.0f) { idx = i; break; }
+            }
+
+            const Instr& rem = m.instrs[idx];
+            uint8_t R = rem.dst % Program::NUM_REGS;
+            bool is_literal = (rem.op == Op::LOADI || rem.op == Op::LOADF);
+
+            // Determine substitution register from the removed instruction's sources.
+            // Unary ops only have src1; binary ops pick randomly between src1 and src2.
+            if (!is_literal) {
+                bool is_unary = (rem.op == Op::BNOT || rem.op == Op::LNOT  ||
+                                 rem.op == Op::INEG || rem.op == Op::FNEG  ||
+                                 rem.op == Op::ITF  || rem.op == Op::FTI   ||
+                                 rem.op == Op::MOV);
+                uint8_t sub_reg = is_unary
+                    ? (rem.src1 % Program::NUM_REGS)
+                    : ((rng() & 1) ? (rem.src1 % Program::NUM_REGS)
+                                   : (rem.src2 % Program::NUM_REGS));
+
+                // Patch downstream uses of R up to (but not including) the next
+                // instruction that writes R — that write shadows our removal.
+                for (int i = idx + 1; i < m.num_instrs; i++) {
+                    if (m.instrs[i].dst % Program::NUM_REGS == R) break;
+                    if (m.instrs[i].src1 % Program::NUM_REGS == R) m.instrs[i].src1 = sub_reg;
+                    if (m.instrs[i].src2 % Program::NUM_REGS == R) m.instrs[i].src2 = sub_reg;
+                }
+            }
 
             // find which chromosome owns idx
             int dk = 0;
