@@ -112,6 +112,18 @@ static uint8_t pick_legal(const uint8_t legal[], int n_legal, std::mt19937& rng)
     return legal[std::uniform_int_distribution<int>(0, n_legal - 1)(rng)];
 }
 
+static bool op_supports_imm_src2(Op op) {
+    switch (op) {
+    case Op::IADD: case Op::ISUB: case Op::IMUL:
+    case Op::BAND: case Op::BOR:  case Op::BXOR:
+    case Op::LSHL: case Op::LSHR: case Op::ASHL: case Op::ASHR:
+    case Op::ILT:  case Op::IEQ:  case Op::ULT:  case Op::UEQ:
+        return true;
+    default:
+        return false;
+    }
+}
+
 Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                const ProblemDef& problem, const std::vector<float>& test_inputs) {
     Program m = src;
@@ -165,7 +177,30 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         case 0: ins.op   = Op(op_d(rng));                   break;
         case 1: ins.dst  = uint8_t(reg_d(rng));             break;
         case 2: ins.src1 = pick_legal(legal, n_legal, rng); break;
-        case 3: ins.src2 = pick_legal(legal, n_legal, rng); break;
+        case 3:
+            if (op_supports_imm_src2(ins.op)) {
+                if (ins.src2 == Program::IMM_SRC) {
+                    // currently immediate: perturb it or switch to a register
+                    if (rng() & 1) {
+                        uint32_t v; memcpy(&v, &ins.lit, 4);
+                        uint32_t nv = perturb_lit(v, rng);
+                        ins.lit.i = int32_t(nv);
+                    } else {
+                        ins.src2 = pick_legal(legal, n_legal, rng);
+                    }
+                } else {
+                    // currently a register: change register or switch to immediate
+                    if (rng() & 1) {
+                        ins.src2 = pick_legal(legal, n_legal, rng);
+                    } else {
+                        ins.src2  = Program::IMM_SRC;
+                        ins.lit.i = int32_t(rng());
+                    }
+                }
+            } else {
+                ins.src2 = pick_legal(legal, n_legal, rng);
+            }
+            break;
         case 4: ins.lit  = random_instr(rng).lit;           break;
         }
     };

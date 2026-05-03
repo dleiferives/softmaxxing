@@ -31,9 +31,9 @@ int compute_dag(const Program& prog, bool live[Program::MAX_INSTRS]) {
             needed[ins.src1 % Program::NUM_REGS] = true;
             break;
         default:
-            // binary op: uses src1 and src2
             needed[ins.src1 % Program::NUM_REGS] = true;
-            needed[ins.src2 % Program::NUM_REGS] = true;
+            if (ins.src2 != Program::IMM_SRC)
+                needed[ins.src2 % Program::NUM_REGS] = true;
             break;
         }
 

@@ -19,7 +19,8 @@ PROFILE_FLAGS := -O2 -g -pg $(BASE_FLAGS)
 # ── Library sources ───────────────────────────────────────────────────────────
 LIB_SRCS := src/problem.cpp src/execute.cpp src/jit.cpp src/fitness.cpp src/dag.cpp \
             src/random.cpp src/mutate.cpp src/hardening.cpp \
-            src/population.cpp src/print.cpp src/innovation.cpp src/speciation.cpp
+            src/population.cpp src/print.cpp src/innovation.cpp src/speciation.cpp \
+            src/codegen.cpp
 LIB_OBJS         := $(LIB_SRCS:.cpp=.o)
 LIB_OBJS_DBG     := $(LIB_SRCS:.cpp=.dbg.o)
 LIB_OBJS_PROF    := $(LIB_SRCS:.cpp=.prof.o)

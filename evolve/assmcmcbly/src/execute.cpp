@@ -20,7 +20,11 @@ void execute(const Program& prog,
         if (!live[idx]) continue;
         const int di    = ins->dst  % Program::NUM_REGS;
         const RegVal& a = regs[ins->src1 % Program::NUM_REGS].val;
-        const RegVal& b = regs[ins->src2 % Program::NUM_REGS].val;
+        RegVal imm_b;
+        if (ins->src2 == Program::IMM_SRC) imm_b.i = ins->lit.i;
+        const RegVal& b = (ins->src2 == Program::IMM_SRC)
+                          ? imm_b
+                          : regs[ins->src2 % Program::NUM_REGS].val;
         Reg& d          = regs[di];
 
         switch (ins->op) {

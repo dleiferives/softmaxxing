@@ -47,31 +47,36 @@ struct E {
     }
 
     void emit_instr(const Instr& ins) {
-        const uint8_t d  = uint8_t((ins.dst  & 0xF) * 4);
-        const uint8_t s1 = uint8_t((ins.src1 & 0xF) * 4);
-        const uint8_t s2 = uint8_t((ins.src2 & 0xF) * 4);
+        const uint8_t d   = uint8_t((ins.dst  & 0xF) * 4);
+        const uint8_t s1  = uint8_t((ins.src1 & 0xF) * 4);
+        const uint8_t s2  = uint8_t((ins.src2 & 0xF) * 4); // reg 15 if IMM_SRC — only used by non-imm path
+        const bool    imm = (ins.src2 == Program::IMM_SRC);
+        uint32_t imm32 = 0;
+        if (imm) memcpy(&imm32, &ins.lit.i, 4);
 
         switch (ins.op) {
 
-        // ── integer binary (eax op= [rsp+s2]) ─────────────────────────────
+        // ── integer binary ────────────────────────────────────────────────
         case Op::IADD:
             load_eax(s1);
-            b(0x03); mem_rsp(0, s2);   // add eax, [rsp+s2]
+            if (imm) { b(0x05); w32(imm32); }           // add eax, imm32
+            else     { b(0x03); mem_rsp(0, s2); }        // add eax, [rsp+s2]
             store_eax(d);
             break;
         case Op::ISUB:
             load_eax(s1);
-            b(0x2B); mem_rsp(0, s2);   // sub eax, [rsp+s2]
+            if (imm) { b(0x2D); w32(imm32); }           // sub eax, imm32
+            else     { b(0x2B); mem_rsp(0, s2); }
             store_eax(d);
             break;
         case Op::IMUL:
             load_eax(s1);
-            load_ecx(s2);
-            b(0x0F); b(0xAF); b(0xC1); // imul eax, ecx
+            if (imm) { b(0x69); b(0xC0); w32(imm32); }  // imul eax, eax, imm32
+            else     { load_ecx(s2); b(0x0F); b(0xAF); b(0xC1); } // imul eax, ecx
             store_eax(d);
             break;
 
-        // ── float binary (xmm0 op= [rsp+s2]) ─────────────────────────────
+        // ── float binary (no immediate form) ─────────────────────────────
         case Op::FADD:
             load_xmm0(s1);
             fop_mem(0x58, s2);         // addss xmm0, [rsp+s2]
@@ -91,63 +96,70 @@ struct E {
         // ── bitwise ───────────────────────────────────────────────────────
         case Op::BAND:
             load_eax(s1);
-            b(0x23); mem_rsp(0, s2);   // and eax, [rsp+s2]
+            if (imm) { b(0x25); w32(imm32); }           // and eax, imm32
+            else     { b(0x23); mem_rsp(0, s2); }
             store_eax(d);
             break;
         case Op::BOR:
             load_eax(s1);
-            b(0x0B); mem_rsp(0, s2);   // or eax, [rsp+s2]
+            if (imm) { b(0x0D); w32(imm32); }           // or eax, imm32
+            else     { b(0x0B); mem_rsp(0, s2); }
             store_eax(d);
             break;
         case Op::BXOR:
             load_eax(s1);
-            b(0x33); mem_rsp(0, s2);   // xor eax, [rsp+s2]
+            if (imm) { b(0x35); w32(imm32); }           // xor eax, imm32
+            else     { b(0x33); mem_rsp(0, s2); }
             store_eax(d);
             break;
 
-        // ── shifts (x86 shl/shr/sar already mask cl by 31 for 32-bit) ────
+        // ── shifts (imm8 form; x86 masks cl/imm by 31 for 32-bit) ────────
         case Op::LSHL:
         case Op::ASHL:
             load_eax(s1);
-            load_ecx(s2);
-            b(0xD3); b(0xE0);          // shl eax, cl
+            if (imm) { b(0xC1); b(0xE0); b(uint8_t(ins.lit.i & 31)); } // shl eax, imm8
+            else     { load_ecx(s2); b(0xD3); b(0xE0); }                // shl eax, cl
             store_eax(d);
             break;
         case Op::LSHR:
             load_eax(s1);
-            load_ecx(s2);
-            b(0xD3); b(0xE8);          // shr eax, cl
+            if (imm) { b(0xC1); b(0xE8); b(uint8_t(ins.lit.i & 31)); } // shr eax, imm8
+            else     { load_ecx(s2); b(0xD3); b(0xE8); }
             store_eax(d);
             break;
         case Op::ASHR:
             load_eax(s1);
-            load_ecx(s2);
-            b(0xD3); b(0xF8);          // sar eax, cl
+            if (imm) { b(0xC1); b(0xF8); b(uint8_t(ins.lit.i & 31)); } // sar eax, imm8
+            else     { load_ecx(s2); b(0xD3); b(0xF8); }
             store_eax(d);
             break;
 
         // ── integer compares → 0/1 ────────────────────────────────────────
         case Op::ILT:
             load_eax(s1);
-            b(0x3B); mem_rsp(0, s2);   // cmp eax, [rsp+s2]
+            if (imm) { b(0x3D); w32(imm32); }           // cmp eax, imm32
+            else     { b(0x3B); mem_rsp(0, s2); }
             setcc_eax(0x9C);           // setl al
             store_eax(d);
             break;
         case Op::IEQ:
             load_eax(s1);
-            b(0x3B); mem_rsp(0, s2);   // cmp eax, [rsp+s2]
+            if (imm) { b(0x3D); w32(imm32); }
+            else     { b(0x3B); mem_rsp(0, s2); }
             setcc_eax(0x94);           // sete al
             store_eax(d);
             break;
         case Op::ULT:
             load_eax(s1);
-            b(0x3B); mem_rsp(0, s2);   // cmp eax, [rsp+s2]
+            if (imm) { b(0x3D); w32(imm32); }
+            else     { b(0x3B); mem_rsp(0, s2); }
             setcc_eax(0x92);           // setb al
             store_eax(d);
             break;
         case Op::UEQ:
             load_eax(s1);
-            b(0x3B); mem_rsp(0, s2);   // cmp eax, [rsp+s2]
+            if (imm) { b(0x3D); w32(imm32); }
+            else     { b(0x3B); mem_rsp(0, s2); }
             setcc_eax(0x94);           // sete al
             store_eax(d);
             break;

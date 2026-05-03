@@ -8,8 +8,11 @@
 // Execution ignores chromosomes — they exist only for genetic ops.
 
 struct Program {
-    static constexpr int NUM_REGS        = 16;
-    static constexpr int MAX_CHROMOSOMES = 64;
+    static constexpr int     NUM_REGS        = 16;
+    static constexpr int     MAX_CHROMOSOMES = 64;
+    // Sentinel in src2: use ins.lit.i as integer immediate instead of a register.
+    // Only valid for integer/bitwise/shift ops — not float ops.
+    static constexpr uint8_t IMM_SRC         = 0xFF;
     static constexpr int MAX_CHROM_LEN   = 8;
     static constexpr int MAX_INSTRS      = MAX_CHROMOSOMES * MAX_CHROM_LEN; // 512
 
