@@ -59,7 +59,7 @@ double fitness_and_cases(const Program& prog,
 
     // Gentle length penalty — breaks ties in favour of shorter programs once
     // error is already low.  1e-4 per instruction: 50 instrs = 0.005, 512 = 0.051.
-    msre += 1e-4 * prog.num_instrs;
+    msre += 1e-5 * prog.num_instrs;
 
     return msre;
 }
