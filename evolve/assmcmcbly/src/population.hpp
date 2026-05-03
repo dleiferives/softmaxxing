@@ -75,5 +75,5 @@ struct Population {
     bool           eval_lru_get(EvalKey k, EvalEntry& out);
     void           eval_lru_put(EvalKey k, const EvalEntry& e);
 
-    void eval_individual(Individual& ni);
+    void eval_individual(Individual& ni, bool penalize_length = true);
 };

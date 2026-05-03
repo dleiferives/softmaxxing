@@ -66,17 +66,19 @@ void Population::eval_lru_put(EvalKey k, const EvalEntry& e) {
     eval_lru_map[k] = eval_lru_list.begin();
 }
 
-void Population::eval_individual(Individual& ni) {
+void Population::eval_individual(Individual& ni, bool penalize_length) {
     EvalKey k = program_hash(ni.prog);
     EvalEntry entry;
-    if (eval_lru_get(k, entry)) {
+    if (penalize_length && eval_lru_get(k, entry)) {
         ni.fit = entry.fit;
         std::memcpy(ni.case_err, entry.case_err, sizeof(ni.case_err));
     } else {
-        ni.fit = fitness_and_cases(ni.prog, ni.case_err, *problem, current_test_inputs);
-        entry.fit = ni.fit;
-        std::memcpy(entry.case_err, ni.case_err, sizeof(entry.case_err));
-        eval_lru_put(k, entry);
+        ni.fit = fitness_and_cases(ni.prog, ni.case_err, *problem, current_test_inputs, penalize_length);
+        if (penalize_length) {
+            entry.fit = ni.fit;
+            std::memcpy(entry.case_err, ni.case_err, sizeof(entry.case_err));
+            eval_lru_put(k, entry);
+        }
     }
 }
 
@@ -346,7 +348,7 @@ void Population::step(std::mt19937& rng) {
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
-            eval_individual(ni);
+            eval_individual(ni, !cache_active);
         }
     }
 
@@ -360,7 +362,7 @@ void Population::step(std::mt19937& rng) {
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
-        eval_individual(ni);
+        eval_individual(ni, !cache_active);
     }
 
     memcpy(indivs, next, sizeof(indivs));

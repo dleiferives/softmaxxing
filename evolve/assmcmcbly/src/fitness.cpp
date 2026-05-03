@@ -13,7 +13,8 @@
 double fitness_and_cases(const Program& prog,
                          float case_err[N_CASES],
                          const ProblemDef& problem,
-                         const std::vector<float>& test_inputs) {
+                         const std::vector<float>& test_inputs,
+                         bool penalize_length) {
 #ifdef USE_JIT
     JitProgram jit = jit_compile(prog);
 #endif
@@ -57,7 +58,8 @@ double fitness_and_cases(const Program& prog,
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
 	
-    msre += msre * 0.01 * prog.num_instrs;
+    if (penalize_length)
+        msre += msre * 0.01 * prog.num_instrs;
     return msre;
 }
 

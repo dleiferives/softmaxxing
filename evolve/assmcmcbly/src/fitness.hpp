@@ -7,10 +7,12 @@ static constexpr int N_CASES = 100;
 
 // Evaluates prog on test_inputs. Fills case_err[N_CASES] with per-case squared
 // relative error. Returns aggregate MSRE + penalties.
+// penalize_length=false omits the instruction-count penalty (use during novelty search).
 double fitness_and_cases(const Program& prog,
                          float case_err[N_CASES],
                          const ProblemDef& problem,
-                         const std::vector<float>& test_inputs);
+                         const std::vector<float>& test_inputs,
+                         bool penalize_length = true);
 
 // Convenience wrapper: aggregate fitness only.
 double fitness(const Program& prog,
