@@ -311,7 +311,7 @@ void Population::step(std::mt19937& rng) {
             float fp[N_BEH];
             compute_fingerprint(child, fp, *problem);
             uint32_t h = behavior_hash(fp);
-            for (int attempt = 0; novelty_seen.count(h) && attempt < 64; attempt++) {
+            for (int attempt = 0; novelty_seen.count(h) && attempt < 512; attempt++) {
                 child = mutate(child, parent_hardness, rng, *problem, current_test_inputs);
                 compute_fingerprint(child, fp, *problem);
                 h = behavior_hash(fp);

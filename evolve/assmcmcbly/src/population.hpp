@@ -27,14 +27,14 @@ struct Population {
     // COMPAT_THRESH is for neat_distance (structural, not behavioral) — tune if needed.
     static constexpr double COMPAT_THRESH    = 2.0;
     static constexpr int    MAX_SPECIES      = 16;
-    static constexpr int    STAG_LIMIT       = 100;
+    static constexpr int    STAG_LIMIT       = 800;
 
     // Global stagnation → hot-burst exploration
     static constexpr int   GSTAG_HOT_TRIGGER   = 1000;
     static constexpr int   GSTAG_ENABLE_CACHE  = 3000;
     static constexpr int   HOT_BURST_DURATION  = 500;
     static constexpr float HOT_EPSILON_SCALE   = 50.0f;
-    static constexpr int   HOT_STAG_MULTIPLIER = 10;
+    static constexpr int   HOT_STAG_MULTIPLIER = 1;
 
     // LRU eval cache — avoids re-evaluating programs the population rediscovers
     static constexpr int EVAL_LRU_SIZE = 16384;
