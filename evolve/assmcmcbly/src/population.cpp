@@ -127,9 +127,8 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
 void Population::step(std::mt19937& rng) {
     generation++;
 
-    // Track global stagnation using the sorted-best from the previous step.
-    // When stuck for GLOBAL_STAG_THRESHOLD gens, trigger a hot burst: wide
-    // lexicase epsilon + extended species stag limit for HOT_BURST_DURATION gens.
+    // Track global stagnation. Counter resets only on genuine improvement;
+    // every GSTAG_HOT_TRIGGER gens of continuous stagnation fires a new burst.
     {
         double cur_best = indivs[0].fit;
         if (cur_best < global_best_fit * 0.999) {
@@ -139,9 +138,10 @@ void Population::step(std::mt19937& rng) {
         } else {
             global_stagnation++;
         }
-        if (global_stagnation >= GLOBAL_STAG_THRESHOLD && hot_burst_remaining == 0) {
+        if (global_stagnation > 0 &&
+            global_stagnation % GSTAG_HOT_TRIGGER == 0 &&
+            hot_burst_remaining == 0) {
             hot_burst_remaining = HOT_BURST_DURATION;
-            global_stagnation   = 0;
         }
         if (hot_burst_remaining > 0) hot_burst_remaining--;
     }

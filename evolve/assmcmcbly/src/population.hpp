@@ -28,10 +28,10 @@ struct Population {
     static constexpr int    STAG_LIMIT      = 100;
 
     // Global stagnation → hot-burst exploration
-    static constexpr int   GLOBAL_STAG_THRESHOLD = 1000;
-    static constexpr int   HOT_BURST_DURATION    = 500;
-    static constexpr float HOT_EPSILON_SCALE     = 50.0f;
-    static constexpr int   HOT_STAG_MULTIPLIER   = 10;
+    static constexpr int   GSTAG_HOT_TRIGGER  = 1000; // fire a burst every N gens of stagnation
+    static constexpr int   HOT_BURST_DURATION = 500;
+    static constexpr float HOT_EPSILON_SCALE  = 50.0f;
+    static constexpr int   HOT_STAG_MULTIPLIER = 10;
 
     // Curriculum: progressively widen the test input range
     static constexpr CurriculumStage CURRICULUM[] = {
