@@ -10,6 +10,18 @@
 #include <limits>
 #include <numeric>
 
+// Hash a behavioral fingerprint into 32 bits for the novelty cache.
+static uint32_t behavior_hash(const float fp[N_BEH]) {
+    uint32_t h = 0x811c9dc5u;
+    for (int i = 0; i < N_BEH; i++) {
+        uint32_t bits;
+        __builtin_memcpy(&bits, &fp[i], sizeof(bits));
+        h ^= bits;
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
 void Population::sort_pop() {
     std::sort(indivs, indivs + SIZE,
               [](const Individual& a, const Individual& b){ return a.fit < b.fit; });
@@ -135,6 +147,7 @@ void Population::step(std::mt19937& rng) {
             global_best_fit     = cur_best;
             global_stagnation   = 0;
             hot_burst_remaining = 0;
+            eval_cache.clear();
         } else {
             global_stagnation++;
         }
@@ -229,6 +242,22 @@ void Population::step(std::mt19937& rng) {
 
     std::uniform_real_distribution<double> coin(0.0, 1.0);
 
+    bool cache_active = (global_stagnation >= GSTAG_ENABLE_CACHE);
+
+    // If cache is active: check offspring behavioral hash; if already seen,
+    // apply one more mutation to push it somewhere new, then record the hash.
+    auto finalize_child = [&](Program& child, const Hardness& parent_hardness) {
+        if (cache_active) {
+            float fp[N_BEH];
+            compute_fingerprint(child, fp);
+            uint32_t h = behavior_hash(fp);
+            if (eval_cache.count(h))
+                child = mutate(child, parent_hardness, rng);
+            compute_fingerprint(child, fp);
+            eval_cache.insert(behavior_hash(fp));
+        }
+    };
+
     // Species champions survive; update representatives to current champions
     for (auto& s : species) {
         if (next_count >= SIZE || s.members.empty()) continue;
@@ -254,6 +283,7 @@ void Population::step(std::mt19937& rng) {
                 child = crossover(indivs[p].prog, indivs[p].fit,
                                   indivs[q].prog, indivs[q].fit, rng);
             }
+            finalize_child(child, indivs[p].hardness);
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
@@ -268,6 +298,7 @@ void Population::step(std::mt19937& rng) {
         if (s.members.empty()) continue;
         int p = select_in_species(s, rng);
         Program child = mutate(indivs[p].prog, indivs[p].hardness, rng);
+        finalize_child(child, indivs[p].hardness);
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
@@ -291,6 +322,7 @@ void Population::step(std::mt19937& rng) {
         global_best_fit     = indivs[0].fit;
         global_stagnation   = 0;
         hot_burst_remaining = 0;
+        eval_cache.clear();
         std::cout << "*** curriculum stage " << curriculum_stage
                   << "  range=[" << st.lo << ", " << st.hi << "]"
                   << "  best_fit=" << indivs[0].fit << "\n";

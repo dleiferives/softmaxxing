@@ -5,6 +5,7 @@
 #include "fitness.hpp"
 #include <limits>
 #include <random>
+#include <unordered_set>
 #include <vector>
 
 struct Individual {
@@ -28,7 +29,8 @@ struct Population {
     static constexpr int    STAG_LIMIT      = 100;
 
     // Global stagnation → hot-burst exploration
-    static constexpr int   GSTAG_HOT_TRIGGER  = 1000; // fire a burst every N gens of stagnation
+    static constexpr int   GSTAG_HOT_TRIGGER    = 1000;
+    static constexpr int   GSTAG_ENABLE_CACHE   = 20000; // enable novelty cache after this many stagnant gens
     static constexpr int   HOT_BURST_DURATION = 500;
     static constexpr float HOT_EPSILON_SCALE  = 50.0f;
     static constexpr int   HOT_STAG_MULTIPLIER = 10;
@@ -44,13 +46,14 @@ struct Population {
     static constexpr int    N_CURRICULUM              = 5;
     static constexpr double CURRICULUM_ADVANCE_THRESH = 0.01;
 
-    Individual           indivs[SIZE];
-    int                  generation          = 0;
-    double               global_best_fit     = std::numeric_limits<double>::max();
-    int                  global_stagnation   = 0;
-    int                  hot_burst_remaining = 0;
-    int                  curriculum_stage    = 0;
-    std::vector<Species> species;
+    Individual                    indivs[SIZE];
+    int                           generation          = 0;
+    double                        global_best_fit     = std::numeric_limits<double>::max();
+    int                           global_stagnation   = 0;
+    int                           hot_burst_remaining = 0;
+    int                           curriculum_stage    = 0;
+    std::unordered_set<uint32_t>  eval_cache;          // behavioral hashes seen since last improvement
+    std::vector<Species>          species;
 
     void init     (std::mt19937& rng);
     void step     (std::mt19937& rng);
