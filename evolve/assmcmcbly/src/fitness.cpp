@@ -10,20 +10,10 @@
 #  include "execute.hpp"
 #endif
 
-static std::vector<float> make_test_inputs(float lo, float hi) {
-    std::vector<float> v(N_CASES);
-    for (int i = 0; i < N_CASES; i++)
-        v[i] = lo * std::pow(hi / lo, float(i) / (N_CASES - 1));
-    return v;
-}
-
-std::vector<float> TEST_INPUTS = make_test_inputs(0.25f, 4.0f);  // curriculum stage 0
-
-void set_curriculum_range(float x_lo, float x_hi) {
-    TEST_INPUTS = make_test_inputs(x_lo, x_hi);
-}
-
-double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
+double fitness_and_cases(const Program& prog,
+                         float case_err[N_CASES],
+                         const ProblemDef& problem,
+                         const std::vector<float>& test_inputs) {
 #ifdef USE_JIT
     JitProgram jit = jit_compile(prog);
 #endif
@@ -31,14 +21,19 @@ double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
     float out_min =  std::numeric_limits<float>::infinity();
     float out_max = -std::numeric_limits<float>::infinity();
 
+    const int ni = problem.n_inputs;
+
     for (int i = 0; i < N_CASES; i++) {
-        float x = TEST_INPUTS[i];
+        const float* xs = &test_inputs[i * ni];
+
 #ifdef USE_JIT
-        float got = jit.fn(x);
+        float got = jit.fn(xs[0]);
 #else
-        float got = execute(prog, x);
+        float out_buf[1] = {};
+        execute(prog, xs, ni, out_buf, problem.n_outputs);
+        float got = out_buf[0];
 #endif
-        float target = 1.0f / std::sqrt(x);
+
         if (!std::isfinite(got)) {
             case_err[i] = 1e6f;
             err += 1e6;
@@ -48,6 +43,10 @@ double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
         if (got < out_min) out_min = got;
         if (got > out_max) out_max = got;
 
+        float target_buf[1] = {};
+        problem.oracle(xs, target_buf);
+        float target = target_buf[0];
+
         float re     = (got - target) / target;
         case_err[i]  = re * re;
         err         += case_err[i];
@@ -55,14 +54,15 @@ double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
 
     double msre = err / N_CASES;
 
-    // Penalise constant-output programs that ignore x.
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
 
     return msre;
 }
 
-double fitness(const Program& prog) {
+double fitness(const Program& prog,
+               const ProblemDef& problem,
+               const std::vector<float>& test_inputs) {
     float case_err[N_CASES];
-    return fitness_and_cases(prog, case_err);
+    return fitness_and_cases(prog, case_err, problem, test_inputs);
 }

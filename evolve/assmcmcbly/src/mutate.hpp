@@ -1,9 +1,10 @@
 #pragma once
 #include "program.hpp"
 #include "hardening.hpp"
+#include "problem.hpp"
 #include <random>
+#include <vector>
 
-// hardness is used to bias instruction selection: hard (load-bearing)
-// instructions are less likely to be mutated or removed.
-Program mutate   (const Program& src, const Hardness& hardness, std::mt19937& rng);
+Program mutate   (const Program& src, const Hardness& hardness, std::mt19937& rng,
+                  const ProblemDef& problem, const std::vector<float>& test_inputs);
 Program crossover(const Program& a, double fa, const Program& b, double fb, std::mt19937& rng);

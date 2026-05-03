@@ -2,8 +2,9 @@
 #include "fitness.hpp"
 #include <algorithm>
 
-void Hardness::recompute(const Program& prog, double base_fitness) {
-    // Scratch no-op: MOV r15 r15 — writes to r15 which nothing reads
+void Hardness::recompute(const Program& prog, double base_fitness,
+                          const ProblemDef& problem,
+                          const std::vector<float>& test_inputs) {
     static const Instr NOOP = [](){
         Instr i; i.op = Op::MOV;
         i.dst = 15; i.src1 = 15; i.src2 = 0;
@@ -13,11 +14,9 @@ void Hardness::recompute(const Program& prog, double base_fitness) {
     for (int i = 0; i < prog.num_instrs; i++) {
         Program tmp = prog;
         tmp.instrs[i] = NOOP;
-        double ablated = fitness(tmp);
-        // hardness = how much worse things got without this instruction
+        double ablated = fitness(tmp, problem, test_inputs);
         scores[i] = float(std::max(0.0, ablated - base_fitness));
     }
-    // zero out any stale entries beyond current program length
     for (int i = prog.num_instrs; i < Program::MAX_INSTRS; i++)
         scores[i] = 0.0f;
 }

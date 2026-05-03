@@ -1,13 +1,17 @@
 #include "execute.hpp"
 #include "dag.hpp"
 
-float execute(const Program& prog, float input) {
+void execute(const Program& prog,
+             const float* inputs, int n_in,
+             float* outputs, int n_out) {
     bool live[Program::MAX_INSTRS];
     compute_dag(prog, live);
 
     Reg regs[Program::NUM_REGS] = {};
-    regs[0].type  = RegType::FLOAT;
-    regs[0].val.f = input;
+    for (int j = 0; j < n_in && j < Program::NUM_REGS; j++) {
+        regs[j].type  = RegType::FLOAT;
+        regs[j].val.f = inputs[j];
+    }
 
     const Instr* ins = prog.instrs;
     const Instr* end = ins + prog.num_instrs;
@@ -51,5 +55,7 @@ float execute(const Program& prog, float input) {
         default: break;
         }
     }
-    return regs[0].val.f;
+
+    for (int k = 0; k < n_out && k < Program::NUM_REGS; k++)
+        outputs[k] = regs[k].val.f;
 }

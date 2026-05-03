@@ -1,18 +1,15 @@
 #pragma once
 #include "program.hpp"
+#include "problem.hpp"
+#include <vector>
 
-// Per-instruction hardness scores stored alongside a Program.
-// hardness[i] = how much fitness worsens when instruction i is ablated.
-// High hardness → instruction is load-bearing → less likely to be mutated.
 struct Hardness {
     float scores[Program::MAX_INSTRS] = {};
 
-    // Recompute hardness for prog given its current fitness baseline.
-    // Replaces each instruction one at a time with a harmless no-op
-    // (MOV r15 r15 → writes to a scratch register, not r0) and measures delta.
-    void recompute(const Program& prog, double base_fitness);
+    void recompute(const Program& prog, double base_fitness,
+                   const ProblemDef& problem,
+                   const std::vector<float>& test_inputs);
 
-    // Mutation probability weight for instruction i: lower = harder to mutate.
     float weight(int i) const {
         return 1.0f / (1.0f + scores[i]);
     }
