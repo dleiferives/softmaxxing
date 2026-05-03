@@ -12,3 +12,16 @@
 /scripts/plot_approx.png
 /.run_rs_HROCH.py.swp
 /evolve/assmcmcbly/assmcmcbly
+/evolve/assmcmcbly/src/dag.d
+/evolve/assmcmcbly/src/execute.d
+/evolve/assmcmcbly/src/fitness.d
+/evolve/assmcmcbly/src/hardening.d
+/evolve/assmcmcbly/src/innovation.d
+/evolve/assmcmcbly/src/jit.d
+/evolve/assmcmcbly/src/mutate.d
+/evolve/assmcmcbly/src/population.d
+/evolve/assmcmcbly/src/print.d
+/evolve/assmcmcbly/src/problem.d
+/evolve/assmcmcbly/src/problem.o
+/evolve/assmcmcbly/src/random.d
+/evolve/assmcmcbly/src/speciation.d

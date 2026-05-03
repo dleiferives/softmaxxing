@@ -81,8 +81,11 @@ void Population::eval_individual(Individual& ni) {
 }
 
 void Population::sort_pop() {
-    std::sort(indivs, indivs + SIZE,
-              [](const Individual& a, const Individual& b){ return a.fit < b.fit; });
+    std::sort(indivs, indivs + SIZE, [](const Individual& a, const Individual& b) {
+        double ka = a.fit + 1e-6 * a.prog.num_instrs;
+        double kb = b.fit + 1e-6 * b.prog.num_instrs;
+        return ka < kb;
+    });
 }
 
 void Population::init(std::mt19937& rng, const ProblemDef& p) {
@@ -182,7 +185,18 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
         }
     }
 
-    return cand[std::uniform_int_distribution<int>(0, n_cand - 1)(rng)];
+    // Among surviving candidates, prefer the shortest program.
+    // If there's a tie in length, pick uniformly among the tied shortest.
+    int min_len = std::numeric_limits<int>::max();
+    for (int i = 0; i < n_cand; i++)
+        min_len = std::min(min_len, int(indivs[cand[i]].prog.num_instrs));
+
+    int short_cand[SIZE], n_short = 0;
+    for (int i = 0; i < n_cand; i++)
+        if (int(indivs[cand[i]].prog.num_instrs) == min_len)
+            short_cand[n_short++] = cand[i];
+
+    return short_cand[std::uniform_int_distribution<int>(0, n_short - 1)(rng)];
 }
 
 void Population::step(std::mt19937& rng) {
