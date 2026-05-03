@@ -81,66 +81,79 @@ void Population::sort_pop() {
 }
 
 float Population::compute_novelty(const float fp[N_BEH]) const {
-    if (novelty_archive.empty()) return 1.0f;
-
     int n = int(novelty_archive.size());
-    // Compute distances; partial_sort to find kNN without full sort
-    static thread_local float dists[ARCHIVE_MAX];
+    if (n == 0) return 1.0f;
+
+    // Static buffer avoids per-call heap allocation (64KB at ARCHIVE_MAX=16384)
+    static float dists[ARCHIVE_MAX];
     for (int i = 0; i < n; i++) {
         float d = 0.0f;
         for (int j = 0; j < N_BEH; j++) {
             float diff = fp[j] - novelty_archive[i].fp[j];
             d += diff * diff;
         }
-        dists[i] = std::sqrt(d);
+        dists[i] = d; // squared distance — fine for relative ordering
     }
 
-    int k = std::min(FRONTIER_K, n);
+    int k = std::min(ARCHIVE_K, n);
     std::partial_sort(dists, dists + k, dists + n);
     float avg = 0.0f;
     for (int i = 0; i < k; i++) avg += dists[i];
     return avg / float(k);
 }
 
-void Population::add_to_frontier(const Program& prog, const Hardness& hardness,
-                                   float fitness, const float fp[N_BEH]) {
+void Population::add_to_frontier(const Program& prog, float fitness, const float fp[N_BEH]) {
     float novelty = compute_novelty(fp);
 
-    // Rolling archive: evict oldest when full
+    // Circular-overwrite archive: O(1) insert, no shifting
     ArchiveEntry ae;
     std::memcpy(ae.fp, fp, sizeof(ae.fp));
     ae.fitness = fitness;
-    if (int(novelty_archive.size()) >= ARCHIVE_MAX)
-        novelty_archive.erase(novelty_archive.begin());
-    novelty_archive.push_back(ae);
+    if (int(novelty_archive.size()) < ARCHIVE_MAX) {
+        novelty_archive.push_back(ae);
+    } else {
+        novelty_archive[archive_head] = ae;
+        archive_head = (archive_head + 1) % ARCHIVE_MAX;
+    }
 
     FrontierEntry fe;
-    fe.prog     = prog;
-    fe.hardness = hardness;
-    fe.fitness  = fitness;
-    fe.novelty  = novelty;
-    fe.priority = novelty + 1.0f / (fitness + 1e-6f);
+    fe.prog          = prog;
+    fe.fitness       = fitness;
+    fe.novelty       = novelty;
+    fe.priority      = novelty + 1.0f / (fitness + 1e-6f);
+    fe.times_sampled = 0;
 
-    // Insert maintaining descending priority order
-    auto pos = std::lower_bound(frontier.begin(), frontier.end(), fe.priority,
-        [](const FrontierEntry& e, float p) { return e.priority > p; });
-    frontier.insert(pos, std::move(fe));
-
-    if (int(frontier.size()) > FRONTIER_MAX)
-        frontier.pop_back();
+    if (int(frontier.size()) < FRONTIER_MAX) {
+        frontier.push_back(std::move(fe));
+    } else {
+        // Replace lowest-priority entry if new one is better
+        auto min_it = std::min_element(frontier.begin(), frontier.end(),
+            [](const FrontierEntry& a, const FrontierEntry& b) {
+                return a.priority < b.priority;
+            });
+        if (fe.priority > min_it->priority)
+            *min_it = std::move(fe);
+    }
 }
 
-int Population::sample_frontier_idx(std::mt19937& rng) const {
+Population::FrontierEntry Population::sample_frontier(std::mt19937& rng) {
     int n = int(frontier.size());
-    if (n == 0) return -1;
 
-    // Exponentially decaying weights by rank so top entries are sampled more
-    static thread_local float w[FRONTIER_MAX];
-    for (int i = 0; i < n; i++)
-        w[i] = std::exp(-0.08f * float(i));
+    // Tournament selection: pick FRONTIER_TOURNAMENT random candidates, keep highest priority
+    std::uniform_int_distribution<int> pick(0, n - 1);
+    int best = pick(rng);
+    for (int i = 1; i < FRONTIER_TOURNAMENT; i++) {
+        int j = pick(rng);
+        if (frontier[j].priority > frontier[best].priority) best = j;
+    }
 
-    std::discrete_distribution<int> dist(w, w + n);
-    return dist(rng);
+    FrontierEntry result = frontier[best];
+
+    // Apply frequency penalty so heavily-sampled entries drift down over time
+    frontier[best].times_sampled++;
+    frontier[best].priority -= FRONTIER_FREQ_DECAY;
+
+    return result;
 }
 
 void Population::init(std::mt19937& rng, const ProblemDef& p) {
@@ -175,6 +188,9 @@ void Population::init(std::mt19937& rng, const ProblemDef& p) {
     s0.best_fit = seed_ind.fit;
     for (int i = 0; i < SIZE; i++) s0.members.push_back(i);
     species.push_back(std::move(s0));
+
+    novelty_archive.reserve(ARCHIVE_MAX);
+    frontier.reserve(FRONTIER_MAX);
 }
 
 void Population::assign_species() {
@@ -261,6 +277,7 @@ void Population::step(std::mt19937& rng) {
             global_stagnation   = 0;
             hot_burst_remaining = 0;
             novelty_archive.clear();
+            archive_head = 0;
             frontier.clear();
         } else {
             global_stagnation++;
@@ -359,8 +376,8 @@ void Population::step(std::mt19937& rng) {
 
     bool cache_active = (global_stagnation >= GSTAG_ENABLE_CACHE);
 
-    // Helper: eval child, then add to frontier
-    auto make_and_add = [&](Program& child, const Hardness& parent_hardness) {
+    // Eval child then always add to frontier (so it's populated before cache_active kicks in)
+    auto make_and_add = [&](Program& child) {
         Individual& ni = next[next_count++];
         ni.prog     = child;
         ni.hardness = {};
@@ -368,7 +385,7 @@ void Population::step(std::mt19937& rng) {
 
         float fp[N_BEH];
         compute_fingerprint(child, fp, *problem);
-        add_to_frontier(child, parent_hardness, float(ni.fit), fp);
+        add_to_frontier(child, float(ni.fit), fp);
     };
 
     // Champions
@@ -386,50 +403,43 @@ void Population::step(std::mt19937& rng) {
         const auto& s = species[si];
         if (s.members.empty()) continue;
         for (int j = 0; j < offspring[si] && next_count < SIZE; j++) {
-            Program  child;
-            Hardness parent_hardness;
+            Program child;
 
-            // When cache is active and frontier is populated, prefer frontier parents
             if (cache_active && !frontier.empty() && coin(rng) < FRONTIER_SAMPLE_RATE) {
-                int fi = sample_frontier_idx(rng);
-                child          = mutate(frontier[fi].prog, frontier[fi].hardness, rng, *problem, current_test_inputs);
-                parent_hardness = frontier[fi].hardness;
+                // Frontier parent: sample by priority, penalize frequency
+                auto fe = sample_frontier(rng);
+                child = mutate(fe.prog, Hardness{}, rng, *problem, current_test_inputs);
             } else {
                 int p = select_in_species(s, rng);
                 if (int(s.members.size()) == 1 || coin(rng) < MUT_RATE) {
-                    child          = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
-                    parent_hardness = indivs[p].hardness;
+                    child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
                 } else {
                     int q = select_in_species(s, rng);
-                    child          = crossover(indivs[p].prog, indivs[p].fit,
-                                               indivs[q].prog, indivs[q].fit, rng);
-                    parent_hardness = indivs[p].hardness;
+                    child = crossover(indivs[p].prog, indivs[p].fit,
+                                      indivs[q].prog, indivs[q].fit, rng);
                 }
             }
 
-            make_and_add(child, parent_hardness);
+            make_and_add(child);
         }
     }
 
     // Fill remaining slots
     while (next_count < SIZE) {
-        Program  child;
-        Hardness parent_hardness;
+        Program child;
 
         if (cache_active && !frontier.empty() && coin(rng) < FRONTIER_SAMPLE_RATE) {
-            int fi = sample_frontier_idx(rng);
-            child          = mutate(frontier[fi].prog, frontier[fi].hardness, rng, *problem, current_test_inputs);
-            parent_hardness = frontier[fi].hardness;
+            auto fe = sample_frontier(rng);
+            child = mutate(fe.prog, Hardness{}, rng, *problem, current_test_inputs);
         } else {
             int si = int(std::uniform_int_distribution<int>(0, nsp - 1)(rng));
             const auto& s = species[si];
             if (s.members.empty()) continue;
             int p = select_in_species(s, rng);
-            child          = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
-            parent_hardness = indivs[p].hardness;
+            child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
         }
 
-        make_and_add(child, parent_hardness);
+        make_and_add(child);
     }
 
     memcpy(indivs, next, sizeof(indivs));
@@ -445,6 +455,7 @@ void Population::step(std::mt19937& rng) {
         eval_lru_list.clear();
         eval_lru_map.clear();
         novelty_archive.clear();
+        archive_head = 0;
         frontier.clear();
         for (int i = 0; i < SIZE; i++)
             eval_individual(indivs[i]);

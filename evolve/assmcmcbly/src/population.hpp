@@ -39,28 +39,37 @@ struct Population {
     // LRU eval cache
     static constexpr int EVAL_LRU_SIZE = 16384;
 
-    // Novelty frontier parameters
-    static constexpr int   ARCHIVE_MAX          = 200;
-    static constexpr int   FRONTIER_MAX         = 64;
-    static constexpr int   FRONTIER_K           = 5;
+    // Novelty archive: fingerprints for kNN novelty scoring
+    static constexpr int ARCHIVE_MAX = 16384;
+    static constexpr int ARCHIVE_K   = 5;   // kNN
+
+    // Frontier: diverse+fit programs sampled as parents when stagnant
+    // Stores full Programs (no Hardness — frontier parents use uniform mutation weights)
+    // ~6.2KB per entry × 16k = ~99MB; unsorted, tournament selection
+    static constexpr int   FRONTIER_MAX        = 16384;
+    static constexpr int   FRONTIER_TOURNAMENT = 8;
     static constexpr float FRONTIER_SAMPLE_RATE = 0.85f;
+    // Priority decremented by this each time the entry is sampled as a parent
+    static constexpr float FRONTIER_FREQ_DECAY = 0.05f;
 
     struct EvalEntry {
         double fit;
         float  case_err[N_CASES];
     };
 
+    // Lean struct — only fingerprint + fitness, no Program copy
     struct ArchiveEntry {
         float fp[N_BEH];
         float fitness;
     };
 
+    // Full Program stored here for use as mutation parents
     struct FrontierEntry {
-        Program  prog;
-        Hardness hardness;
-        float    fitness;
-        float    novelty;
-        float    priority;
+        Program prog;
+        float   fitness;
+        float   novelty;
+        float   priority;
+        int     times_sampled = 0;
     };
 
     using EvalKey     = uint64_t;
@@ -76,7 +85,12 @@ struct Population {
     EvalLRUList                  eval_lru_list;
     EvalLRUMap                   eval_lru_map;
     std::vector<Species>         species;
+
+    // Archive: circular-overwrite ring buffer (O(1) insert)
     std::vector<ArchiveEntry>    novelty_archive;
+    int                          archive_head = 0;
+
+    // Frontier: unsorted, tournament sampling, frequency-penalized priority
     std::vector<FrontierEntry>   frontier;
 
     const ProblemDef*  problem             = nullptr;
@@ -96,8 +110,7 @@ struct Population {
     void           eval_lru_put(EvalKey k, const EvalEntry& e);
     void           eval_individual(Individual& ni, bool penalize_length = true);
 
-    float compute_novelty(const float fp[N_BEH]) const;
-    void  add_to_frontier(const Program& prog, const Hardness& hardness,
-                          float fitness, const float fp[N_BEH]);
-    int   sample_frontier_idx(std::mt19937& rng) const;
+    float         compute_novelty(const float fp[N_BEH]) const;
+    void          add_to_frontier(const Program& prog, float fitness, const float fp[N_BEH]);
+    FrontierEntry sample_frontier(std::mt19937& rng);
 };
