@@ -106,8 +106,8 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
         for (int i = 0; i < n_cand; i++)
             min_err = std::min(min_err, indivs[cand[i]].case_err[ci]);
 
-        // epsilon: 10% relative + small absolute floor so near-ties aren't pruned
-        float epsilon = min_err * 0.1f + 1e-6f;
+        float eps_scale = (hot_burst_remaining > 0) ? HOT_EPSILON_SCALE : 1.0f;
+        float epsilon   = (min_err * 0.1f + 1e-6f) * eps_scale;
 
         int n_next = 0;
         for (int i = 0; i < n_cand; i++)
@@ -125,6 +125,25 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
 
 void Population::step(std::mt19937& rng) {
     generation++;
+
+    // Track global stagnation using the sorted-best from the previous step.
+    // When stuck for GLOBAL_STAG_THRESHOLD gens, trigger a hot burst: wide
+    // lexicase epsilon + extended species stag limit for HOT_BURST_DURATION gens.
+    {
+        double cur_best = indivs[0].fit;
+        if (cur_best < global_best_fit * 0.999) {
+            global_best_fit     = cur_best;
+            global_stagnation   = 0;
+            hot_burst_remaining = 0;
+        } else {
+            global_stagnation++;
+        }
+        if (global_stagnation >= GLOBAL_STAG_THRESHOLD && hot_burst_remaining == 0) {
+            hot_burst_remaining = HOT_BURST_DURATION;
+            global_stagnation   = 0;
+        }
+        if (hot_burst_remaining > 0) hot_burst_remaining--;
+    }
 
     assign_species();
 
@@ -157,7 +176,10 @@ void Population::step(std::mt19937& rng) {
             s.stagnation++;
         }
 
-        if (s.stagnation >= STAG_LIMIT) continue;  // stagnant: champion survives but no offspring
+        int eff_stag_limit = (hot_burst_remaining > 0)
+                           ? STAG_LIMIT * HOT_STAG_MULTIPLIER
+                           : STAG_LIMIT;
+        if (s.stagnation >= eff_stag_limit) continue;
 
         // Fitness sharing: average adjusted fitness = avg(1/fit) / species_size
         // Dividing by size penalises large species and gives small exploratory ones a fair share.

@@ -21,12 +21,21 @@ struct Population {
     static constexpr int    HARDEN_INTERVAL = 100;
 
     // NEAT speciation parameters
-    static constexpr double COMPAT_THRESH   = 2.0;  // mean |output diff| threshold for same species
-    static constexpr int    MAX_SPECIES     = 16;   // hard cap — join closest species when full
+    static constexpr double COMPAT_THRESH   = 2.0;
+    static constexpr int    MAX_SPECIES     = 16;
     static constexpr int    STAG_LIMIT      = 100;  // gens without improvement → species culled
 
+    // Global stagnation → hot-burst exploration
+    static constexpr int   GLOBAL_STAG_THRESHOLD = 1000; // gens of no global improvement before burst
+    static constexpr int   HOT_BURST_DURATION    = 500;  // how long the burst lasts
+    static constexpr float HOT_EPSILON_SCALE     = 50.0f;// lexicase epsilon multiplier during burst
+    static constexpr int   HOT_STAG_MULTIPLIER   = 10;  // species stag limit multiplier during burst
+
     Individual           indivs[SIZE];
-    int                  generation = 0;
+    int                  generation        = 0;
+    double               global_best_fit   = std::numeric_limits<double>::max();
+    int                  global_stagnation = 0;
+    int                  hot_burst_remaining = 0;
     std::vector<Species> species;
 
     void init     (std::mt19937& rng);

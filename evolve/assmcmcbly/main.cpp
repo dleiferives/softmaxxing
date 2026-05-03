@@ -23,10 +23,12 @@ int main() {
                       << "  chroms=" << int(b.prog.num_chroms)
                       << "  instrs=" << b.prog.num_instrs
                       << "  species=" << pop.species.size()
+                      << "  gstag=" << pop.global_stagnation
+                      << (pop.hot_burst_remaining > 0 ? "  HOT" : "")
                       << "\n";
         }
 
-        if (gen % 1000 == 0) {
+        if (gen % 10000 == 0) {
             std::cout << "\n--- gen " << gen << " best ---\n";
             print_program(pop.best().prog);
             std::cout << "Sample outputs:\n";
