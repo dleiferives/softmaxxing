@@ -11,45 +11,54 @@
 #endif
 
 static std::vector<float> make_test_inputs() {
-    std::vector<float> v(100);
-    for (int i = 0; i < 100; i++)
-        v[i] = std::pow(10.0f, -2.0f + 4.0f * float(i) / 99.0f);
+    std::vector<float> v(N_CASES);
+    for (int i = 0; i < N_CASES; i++)
+        v[i] = std::pow(10.0f, -2.0f + 4.0f * float(i) / (N_CASES - 1));
     return v;
 }
 
 const std::vector<float> TEST_INPUTS = make_test_inputs();
 
-double fitness(const Program& prog) {
+double fitness_and_cases(const Program& prog, float case_err[N_CASES]) {
 #ifdef USE_JIT
     JitProgram jit = jit_compile(prog);
 #endif
-    double err = 0.0;
+    double err    = 0.0;
     float out_min =  std::numeric_limits<float>::infinity();
     float out_max = -std::numeric_limits<float>::infinity();
 
-    for (float x : TEST_INPUTS) {
+    for (int i = 0; i < N_CASES; i++) {
+        float x = TEST_INPUTS[i];
 #ifdef USE_JIT
         float got = jit.fn(x);
 #else
         float got = execute(prog, x);
 #endif
         float target = 1.0f / std::sqrt(x);
-        if (!std::isfinite(got)) { err += 1e6; continue; }
+        if (!std::isfinite(got)) {
+            case_err[i] = 1e6f;
+            err += 1e6;
+            continue;
+        }
 
         if (got < out_min) out_min = got;
         if (got > out_max) out_max = got;
 
-        double re = (double(got) - double(target)) / double(target);
-        err += re * re;
+        float re     = (got - target) / target;
+        case_err[i]  = re * re;
+        err         += case_err[i];
     }
-    double msre = err / TEST_INPUTS.size();
+
+    double msre = err / N_CASES;
 
     // Penalise constant-output programs that ignore x.
-    // 1/sqrt(x) spans [0.1, 10] over the test range; any program that produces
-    // a non-trivially x-dependent output will have range >> 0.01.
-    if (std::isfinite(out_min) && out_max - out_min < 0.01f) {
+    if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
-    }
 
     return msre;
+}
+
+double fitness(const Program& prog) {
+    float case_err[N_CASES];
+    return fitness_and_cases(prog, case_err);
 }

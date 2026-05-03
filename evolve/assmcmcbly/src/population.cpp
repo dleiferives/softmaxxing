@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <numeric>
 
 void Population::sort_pop() {
     std::sort(indivs, indivs + SIZE,
@@ -31,17 +32,17 @@ void Population::init(std::mt19937& rng) {
     seed.num_chroms    = 1;
     seed.num_instrs    = 1;
 
-    double seed_fit = fitness(seed);
-    for (auto& ind : indivs) {
-        ind.prog = seed;
-        ind.fit  = seed_fit;
-    }
+    Individual seed_ind;
+    seed_ind.prog = seed;
+    seed_ind.fit  = fitness_and_cases(seed, seed_ind.case_err);
+    for (auto& ind : indivs)
+        ind = seed_ind;
     sort_pop();
 
     species.clear();
     Species s0;
     s0.rep      = seed;
-    s0.best_fit = seed_fit;
+    s0.best_fit = seed_ind.fit;
     compute_fingerprint(seed, s0.rep_fp);
     for (int i = 0; i < SIZE; i++) s0.members.push_back(i);
     species.push_back(std::move(s0));
@@ -85,20 +86,41 @@ void Population::assign_species() {
 
 int Population::select_in_species(const Species& s, std::mt19937& rng) const {
     int n = int(s.members.size());
-    std::uniform_int_distribution<int> d(0, n - 1);
-    int best  = s.members[d(rng)];
-    int tries = std::min(TOURNAMENT, n);
-    for (int i = 1; i < tries; i++) {
-        int c = s.members[d(rng)];
-        double fc = indivs[c].fit, fb = indivs[best].fit;
-        if (fc < fb * 0.999) {
-            best = c;  // clearly better fitness
-        } else if (fc < fb * 1.001 &&
-                   indivs[c].prog.num_instrs < indivs[best].prog.num_instrs) {
-            best = c;  // fitness tied — prefer fewer instructions (parsimony)
+    if (n == 1) return s.members[0];
+
+    // Epsilon-lexicase: shuffle test cases, filter candidates round by round.
+    // A candidate survives a round if its per-case error is within epsilon of
+    // the best error seen on that case among the remaining pool.
+    int cand[SIZE], n_cand = n;
+    for (int i = 0; i < n; i++) cand[i] = s.members[i];
+
+    int cases[N_CASES];
+    std::iota(cases, cases + N_CASES, 0);
+    std::shuffle(cases, cases + N_CASES, rng);
+
+    int next_cand[SIZE];
+    for (int ci : cases) {
+        if (n_cand == 1) break;
+
+        float min_err = std::numeric_limits<float>::infinity();
+        for (int i = 0; i < n_cand; i++)
+            min_err = std::min(min_err, indivs[cand[i]].case_err[ci]);
+
+        // epsilon: 10% relative + small absolute floor so near-ties aren't pruned
+        float epsilon = min_err * 0.1f + 1e-6f;
+
+        int n_next = 0;
+        for (int i = 0; i < n_cand; i++)
+            if (indivs[cand[i]].case_err[ci] <= min_err + epsilon)
+                next_cand[n_next++] = cand[i];
+
+        if (n_next > 0) {
+            n_cand = n_next;
+            std::copy(next_cand, next_cand + n_next, cand);
         }
     }
-    return best;
+
+    return cand[std::uniform_int_distribution<int>(0, n_cand - 1)(rng)];
 }
 
 void Population::step(std::mt19937& rng) {
@@ -209,8 +231,10 @@ void Population::step(std::mt19937& rng) {
                 child = crossover(indivs[p].prog, indivs[p].fit,
                                   indivs[q].prog, indivs[q].fit, rng);
             }
-            double f = fitness(child);
-            next[next_count++] = { child, f, {} };
+            Individual& ni = next[next_count++];
+            ni.prog     = child;
+            ni.hardness = {};
+            ni.fit      = fitness_and_cases(child, ni.case_err);
         }
     }
 
@@ -221,7 +245,10 @@ void Population::step(std::mt19937& rng) {
         if (s.members.empty()) continue;
         int p = select_in_species(s, rng);
         Program child = mutate(indivs[p].prog, indivs[p].hardness, rng);
-        next[next_count++] = { child, fitness(child), {} };
+        Individual& ni = next[next_count++];
+        ni.prog     = child;
+        ni.hardness = {};
+        ni.fit      = fitness_and_cases(child, ni.case_err);
     }
 
     memcpy(indivs, next, sizeof(indivs));

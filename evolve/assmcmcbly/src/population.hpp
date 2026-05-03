@@ -2,14 +2,16 @@
 #include "program.hpp"
 #include "hardening.hpp"
 #include "speciation.hpp"
+#include "fitness.hpp"
 #include <limits>
 #include <random>
 #include <vector>
 
 struct Individual {
     Program  prog;
-    double   fit      = std::numeric_limits<double>::max();
-    Hardness hardness = {};
+    double   fit         = std::numeric_limits<double>::max();
+    Hardness hardness    = {};
+    float    case_err[N_CASES] = {};
 };
 
 struct Population {
