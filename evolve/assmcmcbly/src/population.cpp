@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <stdio.h>
 
 static uint32_t behavior_hash(const float fp[N_BEH]) {
     uint32_t h = 0x811c9dc5u;
@@ -194,6 +195,7 @@ void Population::migrate(std::mt19937& rng) {
 
 void Population::step(std::mt19937& rng) {
     generation++;
+    current_test_inputs = make_test_inputs(*problem, 0, N_CASES);
 
     // --- Global stagnation + hot burst ---
     {
@@ -396,6 +398,7 @@ void Population::step(std::mt19937& rng) {
     if (curriculum_stage < n_stages - 1 &&
         best().fit < problem->curriculum_advance_thresh) {
         curriculum_stage++;
+	std::cout << "test case gen" << std::endl;
         current_test_inputs = make_test_inputs(*problem, curriculum_stage, N_CASES);
 
         eval_lru_list.clear();

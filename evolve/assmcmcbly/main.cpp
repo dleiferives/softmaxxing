@@ -90,6 +90,7 @@ int main() {
 
         if (gen % 100 == 0) {
             std::cout << "gen=" << gen
+                      << "  fitness_dur=" << std::chrono::duration_cast<std::chrono::nanoseconds>(fitness_duration / fitness_calls).count()
                       << "  fit=" << best.fit
                       << "  instrs=" << best.prog.num_instrs
                       << "  stage=" << pop.curriculum_stage

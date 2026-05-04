@@ -15,10 +15,11 @@ double fitness_and_cases(const Program& prog,
                          const ProblemDef& problem,
                          const std::vector<float>& test_inputs,
                          bool penalize_length) {
+	auto start = std::chrono::steady_clock::now();
 #ifdef USE_JIT
     JitProgram jit = jit_compile(prog);
 #endif
-    double err    = 0.0;
+    float err    = 0.0;
     float out_min =  std::numeric_limits<float>::infinity();
     float out_max = -std::numeric_limits<float>::infinity();
 
@@ -34,6 +35,7 @@ double fitness_and_cases(const Program& prog,
         execute(prog, xs, ni, out_buf, problem.n_outputs);
         float got = out_buf[0];
 #endif
+	
 
         if (!std::isfinite(got)) {
             case_err[i] = 1e6f;
@@ -54,13 +56,17 @@ double fitness_and_cases(const Program& prog,
         //case_err[i]  = fabs(re); //* re;
         err         += case_err[i];
     }
+    double tmp_err = err;
 
-    double msre = err / N_CASES;
+    double msre = tmp_err / N_CASES;
 
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
 	
     msre += msre * 0.04 * prog.num_instrs;
+        auto end = std::chrono::steady_clock::now();
+        fitness_duration += end-start;
+        fitness_calls++;
     return msre;
 }
 
