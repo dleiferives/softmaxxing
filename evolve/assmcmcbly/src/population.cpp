@@ -337,9 +337,9 @@ void Population::step(std::mt19937& rng) {
         else                               { isl.stagnation++; }
 
         // Harden champion every HARDEN_INTERVAL
-        if (generation % HARDEN_INTERVAL == 0)
-            isl.indivs[0].hardness.recompute(isl.indivs[0].prog, isl.indivs[0].fit,
-                                              *problem, current_test_inputs);
+        //if (generation % HARDEN_INTERVAL == 0)
+            //isl.indivs[0].hardness.recompute(isl.indivs[0].prog, isl.indivs[0].fit,
+                                              //*problem, current_test_inputs);
 
         Individual next[ISLAND_SIZE];
         int next_count = 0;

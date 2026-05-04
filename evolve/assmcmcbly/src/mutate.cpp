@@ -16,7 +16,7 @@ static int pick_instr(const Program& m, const bool live[],
     float total = 0.0f;
     for (int i = 0; i < m.num_instrs; i++) {
         float base = live[i] ? 1.0f : DEAD_WEIGHT;
-        w[i]  = base * hardness.weight(i);
+        w[i]  = base;//  * hardness.weight(i);
         total += w[i];
     }
     float r = std::uniform_real_distribution<float>(0.0f, total)(rng);

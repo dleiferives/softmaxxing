@@ -53,7 +53,7 @@ int main() {
     };
 
     InputSpec x0;
-    x0.range          = {1e-4f, 1e4f};
+    x0.range          = {1e-30f, 0.999999f};
     x0.use_curriculum = false;
     x0.curriculum     = {
         { 0.25f,   4.0f    },
@@ -63,7 +63,7 @@ int main() {
         { 1e-4f,   1e4f    },
     };
     problem.inputs.push_back(x0);
-    problem.curriculum_advance_thresh = 0.01;
+    problem.curriculum_advance_thresh = 0.0001;
     finalize_problem(problem);
 
     // ── Run ───────────────────────────────────────────────────────────────────

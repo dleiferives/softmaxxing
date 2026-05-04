@@ -49,7 +49,9 @@ double fitness_and_cases(const Program& prog,
         float target = target_buf[0];
 
         float re     = (got - target) / target;
+	// try mre
         case_err[i]  = re * re;
+        //case_err[i]  = fabs(re); //* re;
         err         += case_err[i];
     }
 
@@ -58,8 +60,7 @@ double fitness_and_cases(const Program& prog,
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
 	
-    if (penalize_length)
-        msre += msre * 0.01 * prog.num_instrs;
+    msre += msre * 0.04 * prog.num_instrs;
     return msre;
 }
 
