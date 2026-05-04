@@ -6,6 +6,7 @@
 #include <limits>
 #include <list>
 #include <random>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -33,7 +34,10 @@ struct Population {
     static constexpr float HOT_EPSILON_SCALE  = 50.0f;
 
     // LRU eval cache — avoids re-evaluating identical programs
-    static constexpr int EVAL_LRU_SIZE = 16384;
+    static constexpr int EVAL_LRU_SIZE = 65536;
+
+    // Frontier BFS queue target size with hysteresis band [90%, 110%]
+    static constexpr int FRONTIER_TARGET = 1024;
 
     struct Island {
         Individual indivs[ISLAND_SIZE];
@@ -56,7 +60,11 @@ struct Population {
     int                          global_stagnation   = 0;
     int                          hot_burst_remaining = 0;
     int                          curriculum_stage    = 0;
-    std::unordered_set<uint32_t> novelty_seen;
+    std::unordered_set<uint32_t>               novelty_seen;
+    std::deque<std::pair<uint32_t, Program>>   frontier_queue;  // (behavior_hash, prog) — unevaluated candidates
+    std::unordered_set<uint32_t>               frontier_hashes; // dedup: hashes currently in frontier_queue
+    bool                                       frontier_boost_on = true;
+    uint64_t                                   total_mutations   = 0;
     EvalLRUList                  eval_lru_list;
     EvalLRUMap                   eval_lru_map;
 

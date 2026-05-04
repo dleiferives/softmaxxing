@@ -2,7 +2,7 @@ CXX      := g++
 CXXFLAGS := -O2 -std=c++17 -Wall
 
 # point at any candidate: make SRC=../../runs/.../12345.cpp
-SRC  ?= ../../runs/20260502_234503/29085.cpp
+SRC  ?= $(shell ls -td $$(ls -td ../../runs/* | head -n 1)/* | head -n2 | grep cpp)
 STEM := $(notdir $(basename $(SRC)))
 
 BIN := sweep_$(STEM)

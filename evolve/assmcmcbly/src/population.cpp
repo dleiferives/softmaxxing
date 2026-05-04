@@ -203,6 +203,8 @@ void Population::step(std::mt19937& rng) {
             global_stagnation   = 0;
             hot_burst_remaining = 0;
             novelty_seen.clear();
+            frontier_queue.clear();
+            frontier_hashes.clear();
         } else {
             global_stagnation++;
         }
@@ -216,17 +218,110 @@ void Population::step(std::mt19937& rng) {
 
     bool cache_active = (global_stagnation >= GSTAG_ENABLE_CACHE);
 
-    auto finalize_child = [&](Program& child, const Hardness& parent_hardness) {
-        if (cache_active) {
+    // Hysteresis control for frontier boost
+    {
+        int qs = int(frontier_queue.size());
+        if (qs < FRONTIER_TARGET * 9 / 10)  frontier_boost_on = true;
+        if (qs > FRONTIER_TARGET * 11 / 10) frontier_boost_on = false;
+    }
+
+    // Helper: push a candidate into the frontier if not already there or in novelty_seen.
+    auto frontier_push = [&](uint32_t h, const Program& prog) {
+        if (novelty_seen.count(h) || frontier_hashes.count(h)) return;
+        frontier_hashes.insert(h);
+        frontier_queue.push_back({h, prog});
+    };
+
+    // Helper: pop the front candidate; returns false if queue is empty.
+    auto frontier_pop = [&](uint32_t& h_out, Program& prog_out) -> bool {
+        if (frontier_queue.empty()) return false;
+        auto [h, prog] = frontier_queue.front();
+        frontier_queue.pop_front();
+        frontier_hashes.erase(h);
+        h_out    = h;
+        prog_out = prog;
+        return true;
+    };
+
+    // Periodic reseed: every 100K mutations, replace half the frontier with
+    // random mutations from island individuals to break depth-first tunneling.
+    if (cache_active && total_mutations > 0 && total_mutations % 100000 == 0) {
+        int keep = int(frontier_queue.size()) / 2;
+        while (int(frontier_queue.size()) > keep) {
+            frontier_hashes.erase(frontier_queue.back().first);
+            frontier_queue.pop_back();
+        }
+        std::uniform_int_distribution<int> isl_d(0, N_ISLANDS - 1);
+        std::uniform_int_distribution<int> ind_d(0, ISLAND_SIZE - 1);
+        int to_add = FRONTIER_TARGET / 2;
+        for (int i = 0; i < to_add; i++) {
+            const Individual& src = islands[isl_d(rng)].indivs[ind_d(rng)];
+            Program cand = mutate(src.prog, src.hardness, rng, *problem, current_test_inputs);
+            total_mutations++;
             float fp[N_BEH];
-            compute_fingerprint(child, fp, *problem);
-            uint32_t h = behavior_hash(fp);
-            for (int attempt = 0; novelty_seen.count(h) && attempt < 4096; attempt++) {
+            compute_fingerprint(cand, fp, *problem);
+            frontier_push(behavior_hash(fp), cand);
+        }
+    }
+
+    // When queue is below target, generate one unevaluated candidate and queue it.
+    // Loops forever — the candidate must be genuinely new (not in novelty_seen or frontier).
+    auto enqueue_boost = [&](const Program& prog, const Hardness& h) {
+        if (!frontier_boost_on) return;
+        Program extra = prog;
+        for (uint64_t i = 1; ; i++) {
+            extra = mutate(extra, h, rng, *problem, current_test_inputs);
+            total_mutations++;
+            float fp2[N_BEH];
+            compute_fingerprint(extra, fp2, *problem);
+            uint32_t h2 = behavior_hash(fp2);
+            if (!novelty_seen.count(h2) && !frontier_hashes.count(h2)) {
+                frontier_push(h2, extra);
+                return;
+            }
+            if (i == 100000)
+                std::cout << "[frontier boost: 100K iters still searching]\n";
+            if (i % 1000000 == 0)
+                std::cout << "[frontier boost: " << i/1000000 << "M iters still searching]\n";
+        }
+    };
+
+    auto finalize_child = [&](Program& child, const Hardness& parent_hardness) {
+        if (!cache_active) return;
+        float fp[N_BEH];
+        compute_fingerprint(child, fp, *problem);
+        uint32_t h = behavior_hash(fp);
+        if (!novelty_seen.count(h)) {
+            novelty_seen.insert(h);
+            enqueue_boost(child, parent_hardness);
+            return;
+        }
+        // Not novel — drain frontier candidates until we find one that is.
+        for (uint64_t attempt = 1; ; attempt++) {
+            uint32_t fh; Program fprog;
+            if (frontier_pop(fh, fprog)) {
+                if (!novelty_seen.count(fh)) {
+                    child = fprog;
+                    novelty_seen.insert(fh);
+                    enqueue_boost(child, parent_hardness);
+                    return;
+                }
+            } else {
+                // Frontier empty — mutate in place as fallback.
                 child = mutate(child, parent_hardness, rng, *problem, current_test_inputs);
+                total_mutations++;
                 compute_fingerprint(child, fp, *problem);
                 h = behavior_hash(fp);
+                if (!novelty_seen.count(h)) {
+                    novelty_seen.insert(h);
+                    enqueue_boost(child, parent_hardness);
+                    return;
+                }
             }
-            novelty_seen.insert(h);
+            if (attempt == 100000)
+                std::cout << "[finalize_child: 100K attempts still searching]\n";
+            if (attempt % 1000000 == 0)
+                std::cout << "[finalize_child: " << attempt/1000000 << "M attempts still searching]\n";
         }
     };
 
@@ -306,6 +401,8 @@ void Population::step(std::mt19937& rng) {
         eval_lru_list.clear();
         eval_lru_map.clear();
         novelty_seen.clear();
+        frontier_queue.clear();
+        frontier_hashes.clear();
 
         for (int ii = 0; ii < N_ISLANDS; ii++) {
             for (int i = 0; i < ISLAND_SIZE; i++)

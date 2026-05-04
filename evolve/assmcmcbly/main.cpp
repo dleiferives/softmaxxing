@@ -94,6 +94,10 @@ int main() {
                       << "  instrs=" << best.prog.num_instrs
                       << "  stage=" << pop.curriculum_stage
                       << "  gstag=" << pop.global_stagnation
+                      << (pop.global_stagnation >= Population::GSTAG_ENABLE_CACHE
+                          ? "  novel=" + std::to_string(pop.novelty_seen.size())
+                            + "  frontier=" + std::to_string(pop.frontier_queue.size())
+                          : "")
                       << (pop.hot_burst_remaining > 0 ? "  HOT" : "")
                       << "\n";
         }
