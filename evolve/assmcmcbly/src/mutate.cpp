@@ -8,23 +8,23 @@
 
 static constexpr float DEAD_WEIGHT = 10.0f;
 
-// Pick an instruction index within a chromosome, weighted by liveness + hardness.
-static int pick_instr(int cs, int clen, const bool live[],
+// Pick an instruction index over the whole program, weighted by liveness + hardness.
+static int pick_instr(const Program& m, const bool live[],
                       const Hardness& hardness, std::mt19937& rng) {
-    if (clen == 1) return 0;
-    float w[Program::MAX_CHROM_LEN];
+    if (m.num_instrs == 1) return 0;
+    float w[Program::MAX_INSTRS];
     float total = 0.0f;
-    for (int i = 0; i < clen; i++) {
-        float base = live[cs + i] ? 1.0f : DEAD_WEIGHT;
-        w[i]  = base * hardness.weight(cs + i);
+    for (int i = 0; i < m.num_instrs; i++) {
+        float base = live[i] ? 1.0f : DEAD_WEIGHT;
+        w[i]  = base * hardness.weight(i);
         total += w[i];
     }
     float r = std::uniform_real_distribution<float>(0.0f, total)(rng);
-    for (int i = 0; i < clen; i++) {
+    for (int i = 0; i < m.num_instrs; i++) {
         r -= w[i];
         if (r <= 0.0f) return i;
     }
-    return clen - 1;
+    return int(m.num_instrs) - 1;
 }
 
 // Mutate a raw 32-bit literal value with one of several small perturbations.
@@ -88,14 +88,11 @@ static bool mcmc_constant(Program& prog, int instr_idx,
     if (best_fit < base_fitness) {
         return true;
     }
-    // No improvement: restore original and signal fallback
     prog.instrs[instr_idx].lit.i = int32_t(orig_val);
     return false;
 }
 
 // Collect the set of registers that are legal to read at instruction position `pos`.
-// A register is legal if it is an input register (0..n_inputs-1) or has been
-// written as a dst by some instruction before `pos`.
 static void legal_srcs_at(const Program& p, int n_inputs, int pos,
                            uint8_t out[], int& n_out) {
     bool defined[Program::NUM_REGS] = {};
@@ -127,50 +124,40 @@ static bool op_supports_imm_src2(Op op) {
 Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                const ProblemDef& problem, const std::vector<float>& test_inputs) {
     Program m = src;
-    if (m.num_chroms == 0) {
-        append_random_chromosome(m, rng);
-        for (int i = 0; i < m.num_instrs; i++) {
-            uint8_t legal[Program::NUM_REGS]; int n_legal;
-            legal_srcs_at(m, problem.n_inputs, i, legal, n_legal);
-            m.instrs[i].src1 = pick_legal(legal, n_legal, rng);
-            m.instrs[i].src2 = pick_legal(legal, n_legal, rng);
-        }
+
+    if (m.num_instrs == 0) {
+        Instr si = random_instr(rng);
+        uint8_t legal[Program::NUM_REGS]; int n_legal;
+        legal_srcs_at(m, problem.n_inputs, 0, legal, n_legal);
+        si.src1 = pick_legal(legal, n_legal, rng);
+        si.src2 = pick_legal(legal, n_legal, rng);
+        m.instrs[0]  = si;
+        m.num_instrs = 1;
         return m;
     }
 
-    // kind_d raw [0,19] maps to weighted cases:
-    //   0..3  -> 0  field mutate        20%
-    //   4..5  -> 6  strip dead          10%
-    //   6..7  -> 5  MCMC constant       10%
-    //   8     -> 1  swap chromosomes     5%
-    //   9     -> 2  replace chromosome   5%
-    //   10    -> 4  remove chromosome    5%
-    //   11..12-> 7  insert dep-split    10%
-    //   13..15-> 8  add instruction     15%
-    //   16..17-> 9  split chromosome    10%
-    //   18..19->10  merge chromosome    10%
-    std::uniform_int_distribution<int> kind_d(0, 19);
-    std::uniform_int_distribution<int> ci_d  (0, m.num_chroms - 1);
-    std::uniform_int_distribution<int> op_d  (0, int(Op::COUNT) - 1);
-    std::uniform_int_distribution<int> reg_d (0, Program::NUM_REGS - 1);
+    // Mutation kind weights over [0,19]:
+    //   0..3  -> 0  field mutate         20%
+    //   4..5  -> 1  strip dead           10%
+    //   6..7  -> 2  MCMC constant        10%
+    //   8..9  -> 3  dep-split insert     10%
+    //   10..12-> 4  add instruction      15%
+    //   13..15-> 5  remove instruction(s)15%
+    //   16..19-> 6  replace slice        20%
+    int raw  = std::uniform_int_distribution<int>(0, 19)(rng);
+    int kind = (raw <= 3) ? 0 : (raw <= 5) ? 1 : (raw <= 7) ? 2 :
+               (raw <= 9) ? 3 : (raw <= 12) ? 4 : (raw <= 15) ? 5 : 6;
 
-    int raw  = kind_d(rng);
-    int kind = (raw <= 3) ? 0 : (raw <= 5) ? 6  : (raw <= 7) ? 5  :
-               (raw == 8) ? 1 : (raw == 9) ? 2  : (raw == 10) ? 4 :
-               (raw <= 12) ? 7 : (raw <= 15) ? 8 : (raw <= 17) ? 9 : 10;
-
-    int ci   = ci_d(rng);
-    int cs   = m.chrom_start(ci);
-    int clen = m.chrom_lens[ci];
+    std::uniform_int_distribution<int> op_d (0, int(Op::COUNT) - 1);
+    std::uniform_int_distribution<int> reg_d(0, Program::NUM_REGS - 1);
 
     bool live[Program::MAX_INSTRS];
     compute_dag(m, live);
 
     auto do_field_mutate = [&]() {
-        if (clen == 0) return;
-        int local_pos = pick_instr(cs, clen, live, hardness, rng);
-        int abs_pos   = cs + local_pos;
-        Instr& ins = m.instrs[abs_pos];
+        if (m.num_instrs == 0) return;
+        int abs_pos = pick_instr(m, live, hardness, rng);
+        Instr& ins  = m.instrs[abs_pos];
         uint8_t legal[Program::NUM_REGS]; int n_legal;
         legal_srcs_at(m, problem.n_inputs, abs_pos, legal, n_legal);
         switch (std::uniform_int_distribution<int>(0, 4)(rng)) {
@@ -180,7 +167,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         case 3:
             if (op_supports_imm_src2(ins.op)) {
                 if (ins.src2 == Program::IMM_SRC) {
-                    // currently immediate: perturb it or switch to a register
                     if (rng() & 1) {
                         uint32_t v; memcpy(&v, &ins.lit, 4);
                         uint32_t nv = perturb_lit(v, rng);
@@ -189,7 +175,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                         ins.src2 = pick_legal(legal, n_legal, rng);
                     }
                 } else {
-                    // currently a register: change register or switch to immediate
                     if (rng() & 1) {
                         ins.src2 = pick_legal(legal, n_legal, rng);
                     } else {
@@ -201,7 +186,7 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                 ins.src2 = pick_legal(legal, n_legal, rng);
             }
             break;
-        case 4: ins.lit  = random_instr(rng).lit;           break;
+        case 4: ins.lit = random_instr(rng).lit; break;
         }
     };
 
@@ -210,79 +195,7 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         do_field_mutate();
         break;
     }
-    case 1: { // swap two chromosomes (reorder)
-        if (m.num_chroms < 2) break;
-        int cj = ci_d(rng);
-        while (cj == ci) cj = ci_d(rng);
-
-        int lo = (ci < cj) ? ci : cj;
-        int hi = (ci < cj) ? cj : ci;
-        int lo_s = m.chrom_start(lo), lo_l = m.chrom_lens[lo];
-        int hi_s = m.chrom_start(hi), hi_l = m.chrom_lens[hi];
-
-        Program tmp = m;
-        tmp.num_instrs = 0;
-        for (int k = 0; k < m.num_chroms; k++) {
-            int ks = m.chrom_start(k), kl = m.chrom_lens[k];
-            const Instr* src_ptr;
-            int           src_len;
-            if      (k == lo) { src_ptr = m.instrs + hi_s; src_len = hi_l; }
-            else if (k == hi) { src_ptr = m.instrs + lo_s; src_len = lo_l; }
-            else              { src_ptr = m.instrs + ks;   src_len = kl;   }
-            memcpy(tmp.instrs + tmp.num_instrs, src_ptr, src_len * sizeof(Instr));
-            tmp.chrom_lens[k]  = uint8_t(src_len);
-            tmp.num_instrs    += uint16_t(src_len);
-        }
-        m = tmp;
-        break;
-    }
-    case 2: { // replace chromosome ci with a random one
-        int new_len = std::uniform_int_distribution<int>(1, Program::MAX_CHROM_LEN)(rng);
-        int delta   = new_len - clen;
-        if (m.num_instrs + delta > Program::MAX_INSTRS) break;
-
-        int tail = int(m.num_instrs) - cs - clen;
-        memmove(m.instrs + cs + new_len, m.instrs + cs + clen, tail * sizeof(Instr));
-        for (int i = 0; i < new_len; i++) {
-            m.instrs[cs + i] = random_instr(rng);
-            uint8_t legal[Program::NUM_REGS]; int n_legal;
-            legal_srcs_at(m, problem.n_inputs, cs + i, legal, n_legal);
-            m.instrs[cs + i].src1 = pick_legal(legal, n_legal, rng);
-            m.instrs[cs + i].src2 = pick_legal(legal, n_legal, rng);
-        }
-        m.chrom_lens[ci] = uint8_t(new_len);
-        m.num_instrs     = uint16_t(m.num_instrs + delta);
-        break;
-    }
-    case 4: { // remove chromosome ci
-        if (m.num_chroms <= 1) break;
-        int tail = int(m.num_instrs) - cs - clen;
-        memmove(m.instrs + cs, m.instrs + cs + clen, tail * sizeof(Instr));
-        memmove(m.chrom_lens + ci, m.chrom_lens + ci + 1,
-                (m.num_chroms - ci - 1) * sizeof(uint8_t));
-        m.num_chroms--;
-        m.num_instrs = uint16_t(m.num_instrs - clen);
-        break;
-    }
-    case 5: { // MCMC constant: pick a LOADI/LOADF, run short MCMC on its value
-        int const_idxs[Program::MAX_INSTRS];
-        int n_consts = 0;
-        for (int i = 0; i < m.num_instrs; i++)
-            if (m.instrs[i].op == Op::LOADI || m.instrs[i].op == Op::LOADF)
-                const_idxs[n_consts++] = i;
-
-        if (n_consts == 0) { do_field_mutate(); break; }
-
-        {
-            int target = const_idxs[std::uniform_int_distribution<int>(0, n_consts - 1)(rng)];
-            double base = fitness(m, problem, test_inputs);
-            if (!mcmc_constant(m, target, base, rng, problem, test_inputs)) do_field_mutate();
-        }
-        break;
-    }
-    case 6: { // remove an instruction and patch its downstream uses
-        // Weight dead instructions 8x over live ones — still allows live removal
-        // since the substitution makes it graph-safe.
+    case 1: { // remove dead instructions (1-3 passes, weighted toward dead)
         int n = std::uniform_int_distribution<int>(1, 3)(rng);
         for (int pass = 0; pass < n; pass++) {
             if (m.num_instrs == 0) break;
@@ -294,18 +207,16 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                 weights[i] = live[i] ? 1.0f : 8.0f;
                 total_w += weights[i];
             }
-            float r = std::uniform_real_distribution<float>(0.0f, total_w)(rng);
-            int idx = m.num_instrs - 1;
+            float r2 = std::uniform_real_distribution<float>(0.0f, total_w)(rng);
+            int idx = int(m.num_instrs) - 1;
             for (int i = 0; i < m.num_instrs; i++) {
-                r -= weights[i]; if (r <= 0.0f) { idx = i; break; }
+                r2 -= weights[i]; if (r2 <= 0.0f) { idx = i; break; }
             }
 
             const Instr& rem = m.instrs[idx];
             uint8_t R = rem.dst % Program::NUM_REGS;
             bool is_literal = (rem.op == Op::LOADI || rem.op == Op::LOADF);
 
-            // Determine substitution register from the removed instruction's sources.
-            // Unary ops only have src1; binary ops pick randomly between src1 and src2.
             if (!is_literal) {
                 bool is_unary = (rem.op == Op::BNOT || rem.op == Op::LNOT  ||
                                  rem.op == Op::INEG || rem.op == Op::FNEG  ||
@@ -315,9 +226,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                     ? (rem.src1 % Program::NUM_REGS)
                     : ((rng() & 1) ? (rem.src1 % Program::NUM_REGS)
                                    : (rem.src2 % Program::NUM_REGS));
-
-                // Patch downstream uses of R up to (but not including) the next
-                // instruction that writes R — that write shadows our removal.
                 for (int i = idx + 1; i < m.num_instrs; i++) {
                     if (m.instrs[i].dst % Program::NUM_REGS == R) break;
                     if (m.instrs[i].src1 % Program::NUM_REGS == R) m.instrs[i].src1 = sub_reg;
@@ -325,42 +233,39 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
                 }
             }
 
-            // find which chromosome owns idx
-            int dk = 0;
-            for (int k = 0; k < m.num_chroms; k++) {
-                int ks = m.chrom_start(k);
-                if (idx >= ks && idx < ks + m.chrom_lens[k]) { dk = k; break; }
-            }
-
             int tail = int(m.num_instrs) - idx - 1;
             memmove(m.instrs + idx, m.instrs + idx + 1, tail * sizeof(Instr));
             m.num_instrs--;
-            m.chrom_lens[dk]--;
 
-            if (m.chrom_lens[dk] == 0) {
-                if (m.num_chroms > 1) {
-                    memmove(m.chrom_lens + dk, m.chrom_lens + dk + 1,
-                            (m.num_chroms - dk - 1) * sizeof(uint8_t));
-                    m.num_chroms--;
-                } else {
-                    // last chromosome emptied — seed with one random instruction
-                    Instr seed_instr = random_instr(rng);
-                    uint8_t legal[Program::NUM_REGS]; int n_legal;
-                    legal_srcs_at(m, problem.n_inputs, 0, legal, n_legal);
-                    seed_instr.src1 = pick_legal(legal, n_legal, rng);
-                    seed_instr.src2 = pick_legal(legal, n_legal, rng);
-                    m.instrs[0]     = seed_instr;
-                    m.chrom_lens[0] = 1;
-                    m.num_instrs    = 1;
-                }
+            if (m.num_instrs == 0) {
+                Instr seed_instr = random_instr(rng);
+                uint8_t legal[Program::NUM_REGS]; int n_legal;
+                legal_srcs_at(m, problem.n_inputs, 0, legal, n_legal);
+                seed_instr.src1 = pick_legal(legal, n_legal, rng);
+                seed_instr.src2 = pick_legal(legal, n_legal, rng);
+                m.instrs[0]  = seed_instr;
+                m.num_instrs = 1;
             }
         }
         break;
     }
-    case 7: { // intercept a live dep-edge: insert instruction with fresh dst register
+    case 2: { // MCMC constant: pick a LOADI/LOADF, run short MCMC on its value
+        int const_idxs[Program::MAX_INSTRS];
+        int n_consts = 0;
+        for (int i = 0; i < m.num_instrs; i++)
+            if (m.instrs[i].op == Op::LOADI || m.instrs[i].op == Op::LOADF)
+                const_idxs[n_consts++] = i;
+
+        if (n_consts == 0) { do_field_mutate(); break; }
+
+        int target = const_idxs[std::uniform_int_distribution<int>(0, n_consts - 1)(rng)];
+        double base = fitness(m, problem, test_inputs);
+        if (!mcmc_constant(m, target, base, rng, problem, test_inputs)) do_field_mutate();
+        break;
+    }
+    case 3: { // intercept a live dep-edge: insert instruction with fresh dst register
         if (m.num_instrs >= Program::MAX_INSTRS) break;
 
-        // Pick a live instruction P whose output register R we will intercept.
         int live_idxs[Program::MAX_INSTRS];
         int nlive = 0;
         for (int i = 0; i < m.num_instrs; i++)
@@ -370,7 +275,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         int P = live_idxs[std::uniform_int_distribution<int>(0, nlive - 1)(rng)];
         uint8_t R = m.instrs[P].dst % Program::NUM_REGS;
 
-        // Legal source registers at the insertion point (after P): inputs + all dsts 0..P.
         bool defined[Program::NUM_REGS] = {};
         for (int r = 0; r < problem.n_inputs && r < Program::NUM_REGS; r++) defined[r] = true;
         for (int i = 0; i <= P; i++) defined[m.instrs[i].dst % Program::NUM_REGS] = true;
@@ -378,7 +282,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         for (int r = 0; r < Program::NUM_REGS; r++)
             if (defined[r]) legal[n_legal++] = uint8_t(r);
 
-        // Try to allocate a fresh destination register (never written anywhere in the program).
         bool used_as_dst[Program::NUM_REGS] = {};
         for (int i = 0; i < m.num_instrs; i++)
             used_as_dst[m.instrs[i].dst % Program::NUM_REGS] = true;
@@ -388,20 +291,12 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
 
         uint8_t new_dst = (n_fresh > 0)
             ? fresh[std::uniform_int_distribution<int>(0, n_fresh - 1)(rng)]
-            : R; // no room — write back to R
+            : R;
 
-        // Build the intercepting instruction.
-        Instr ni    = random_instr(rng);
-        ni.src1     = R;                              // reads P's output
-        ni.src2     = pick_legal(legal, n_legal, rng); // any legal reg as second operand
-        ni.dst      = new_dst;
-
-        // Find chromosome containing P.
-        int pk = 0;
-        for (int k = 0; k < m.num_chroms; k++) {
-            int ks = m.chrom_start(k);
-            if (P >= ks && P < ks + m.chrom_lens[k]) { pk = k; break; }
-        }
+        Instr ni = random_instr(rng);
+        ni.src1  = R;
+        ni.src2  = pick_legal(legal, n_legal, rng);
+        ni.dst   = new_dst;
 
         int insert_at = P + 1;
         int tail = int(m.num_instrs) - insert_at;
@@ -409,21 +304,6 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         m.instrs[insert_at] = ni;
         m.num_instrs++;
 
-        if (m.chrom_lens[pk] < Program::MAX_CHROM_LEN) {
-            m.chrom_lens[pk]++;
-        } else if (m.num_chroms < Program::MAX_CHROMOSOMES) {
-            memmove(m.chrom_lens + pk + 2, m.chrom_lens + pk + 1,
-                    (m.num_chroms - pk - 1) * sizeof(uint8_t));
-            m.chrom_lens[pk + 1] = 1;
-            m.num_chroms++;
-        } else {
-            // no room anywhere — revert
-            memmove(m.instrs + insert_at, m.instrs + insert_at + 1, tail * sizeof(Instr));
-            m.num_instrs--;
-            break;
-        }
-
-        // Redirect the first downstream instruction that reads R to use new_dst instead.
         if (new_dst != R) {
             for (int i = insert_at + 1; i < m.num_instrs; i++) {
                 Instr& q = m.instrs[i];
@@ -435,12 +315,10 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         }
         break;
     }
-    case 8: { // add instruction: insert a random new instruction at a random position in ci
+    case 4: { // add instruction at a random position
         if (m.num_instrs >= Program::MAX_INSTRS) break;
-        if (clen >= Program::MAX_CHROM_LEN) break;
 
-        // insert at a random position within the chromosome [cs, cs+clen]
-        int pos = cs + std::uniform_int_distribution<int>(0, clen)(rng);
+        int pos = std::uniform_int_distribution<int>(0, int(m.num_instrs))(rng);
         int tail = int(m.num_instrs) - pos;
         memmove(m.instrs + pos + 1, m.instrs + pos, tail * sizeof(Instr));
 
@@ -449,47 +327,46 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
         legal_srcs_at(m, problem.n_inputs, pos, legal, n_legal);
         ni.src1 = pick_legal(legal, n_legal, rng);
         ni.src2 = pick_legal(legal, n_legal, rng);
-        // bias src1 toward the live register written just before insertion point
         if (pos > 0 && live[pos - 1])
             ni.src1 = m.instrs[pos - 1].dst % Program::NUM_REGS;
         m.instrs[pos] = ni;
         m.num_instrs++;
-        m.chrom_lens[ci]++;
         break;
     }
-    case 9: { // split chromosome: cut ci at a random internal point into two chromosomes
-        if (clen < 2) break;
-        if (m.num_chroms >= Program::MAX_CHROMOSOMES) break;
-
-        int cut = std::uniform_int_distribution<int>(1, clen - 1)(rng);
-        int lo_len = cut;
-        int hi_len = clen - cut;
-
-        // shift chrom_lens to open a slot after ci
-        memmove(m.chrom_lens + ci + 2, m.chrom_lens + ci + 1,
-                (m.num_chroms - ci - 1) * sizeof(uint8_t));
-        m.chrom_lens[ci]     = uint8_t(lo_len);
-        m.chrom_lens[ci + 1] = uint8_t(hi_len);
-        m.num_chroms++;
-        // instrs array is unchanged — the split is purely in chrom_lens
+    case 5: { // remove 1-3 contiguous instructions
+        int n = std::uniform_int_distribution<int>(1, 3)(rng);
+        n = std::min(n, int(m.num_instrs) - 1);  // keep at least 1
+        if (n <= 0) break;
+        int start = std::uniform_int_distribution<int>(0, int(m.num_instrs) - n)(rng);
+        int tail  = int(m.num_instrs) - start - n;
+        memmove(m.instrs + start, m.instrs + start + n, tail * sizeof(Instr));
+        m.num_instrs = uint16_t(m.num_instrs - n);
+        if (m.num_instrs == 0) {
+            m.instrs[0]  = random_instr(rng);
+            m.num_instrs = 1;
+        }
         break;
     }
-    case 10: { // merge chromosome: join ci and ci+1 into one if they fit
-        if (m.num_chroms < 2) break;
-        int cj = (ci + 1) % m.num_chroms;  // wrap so last chrom can merge with first
-        if (cj == 0) { ci = m.num_chroms - 1; cj = 0; }  // prefer ci < cj
-        if (ci > cj) std::swap(ci, cj);
+    case 6: { // replace a random slice with fresh random instructions
+        if (m.num_instrs == 0) break;
+        static constexpr int MAX_SLICE = 8;
+        int start   = std::uniform_int_distribution<int>(0, int(m.num_instrs) - 1)(rng);
+        int old_len = std::uniform_int_distribution<int>(1, std::min(MAX_SLICE, int(m.num_instrs) - start))(rng);
+        int new_len = std::uniform_int_distribution<int>(1, MAX_SLICE)(rng);
+        int delta   = new_len - old_len;
+        if (int(m.num_instrs) + delta > Program::MAX_INSTRS) break;
+        if (int(m.num_instrs) + delta < 1) break;
 
-        int ci_len = m.chrom_lens[ci];
-        int cj_len = m.chrom_lens[cj];
-        if (ci_len + cj_len > Program::MAX_CHROM_LEN) break;
-
-        // cj must immediately follow ci for a simple merge (no instr move needed
-        // when they are already adjacent, which they are since we picked cj=ci+1)
-        m.chrom_lens[ci] = uint8_t(ci_len + cj_len);
-        memmove(m.chrom_lens + cj, m.chrom_lens + cj + 1,
-                (m.num_chroms - cj - 1) * sizeof(uint8_t));
-        m.num_chroms--;
+        int tail = int(m.num_instrs) - start - old_len;
+        memmove(m.instrs + start + new_len, m.instrs + start + old_len, tail * sizeof(Instr));
+        for (int i = 0; i < new_len; i++) {
+            m.instrs[start + i] = random_instr(rng);
+            uint8_t legal[Program::NUM_REGS]; int n_legal;
+            legal_srcs_at(m, problem.n_inputs, start + i, legal, n_legal);
+            m.instrs[start + i].src1 = pick_legal(legal, n_legal, rng);
+            m.instrs[start + i].src2 = pick_legal(legal, n_legal, rng);
+        }
+        m.num_instrs = uint16_t(int(m.num_instrs) + delta);
         break;
     }
     }
@@ -497,20 +374,16 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
 }
 
 // Innovation-aligned crossover (NEAT-style).
-// The fitter parent's structure (instruction order + chromosome boundaries) is the
-// backbone.  At each instruction, if the weaker parent carries the same innovation
-// number, we have a 40% chance to swap that instruction's fields in — keeping the
-// innovation number itself unchanged so genomic distance stays correct.
-// Excess/disjoint genes from the weaker parent are discarded; structural growth
-// is handled by the dedicated growth mutations instead.
+// The fitter parent's structure is the backbone. At each instruction, if the
+// weaker parent carries the same innovation number, 40% chance to swap in its fields.
 Program crossover(const Program& a, double fa, const Program& b, double fb, std::mt19937& rng) {
-    if (a.num_chroms == 0) return b;
-    if (b.num_chroms == 0) return a;
+    if (a.num_instrs == 0) return b;
+    if (b.num_instrs == 0) return a;
 
     const Program& fitter = (fa <= fb) ? a : b;
     const Program& weaker = (fa <= fb) ? b : a;
 
-    Program child = fitter;  // start with fitter parent's structure
+    Program child = fitter;
 
     std::uniform_real_distribution<float> coin(0.0f, 1.0f);
 
@@ -520,10 +393,9 @@ Program crossover(const Program& a, double fa, const Program& b, double fb, std:
         for (int j = 0; j < nw; j++) {
             if (weaker.instrs[j].innov == innov) {
                 if (coin(rng) < 0.4f) {
-                    // swap all fields except innov
-                    Instr tmp        = weaker.instrs[j];
-                    tmp.innov        = innov;
-                    child.instrs[i]  = tmp;
+                    Instr tmp       = weaker.instrs[j];
+                    tmp.innov       = innov;
+                    child.instrs[i] = tmp;
                 }
                 break;
             }

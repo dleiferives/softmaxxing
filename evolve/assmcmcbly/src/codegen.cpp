@@ -146,15 +146,8 @@ void emit_solution(const Program& prog, int gen, double fit,
       << "// Program listing (" << nlive << " live / " << prog.num_instrs << " total):\n";
 
     // Emit program listing as block comment.
-    int chrom_cursor = 0;
-    int ci = 0;
     for (int i = 0; i < prog.num_instrs; i++) {
-        if (i == chrom_cursor) {
-            f << "//   [chrom " << ci << "]\n";
-            chrom_cursor += prog.chrom_lens[ci];
-            ci++;
-        }
-        f << "//     " << (live[i] ? " " : "~");  // ~ marks dead
+        f << "//   " << (live[i] ? " " : "~");  // ~ marks dead
         const Instr& ins = prog.instrs[i];
         f << op_name(ins.op) << "  r" << int(ins.dst % Program::NUM_REGS);
         switch (ins.op) {

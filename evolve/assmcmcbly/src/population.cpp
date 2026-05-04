@@ -24,11 +24,8 @@ static uint32_t behavior_hash(const float fp[N_BEH]) {
 Population::EvalKey Population::program_hash(const Program& p) {
     uint64_t h = 14695981039346656037ULL;
     auto mix = [&](uint8_t b) { h ^= b; h *= 1099511628211ULL; };
-    mix(p.num_chroms);
     mix(uint8_t(p.num_instrs));
     mix(uint8_t(p.num_instrs >> 8));
-    for (int k = 0; k < p.num_chroms; k++)
-        mix(p.chrom_lens[k]);
     for (int i = 0; i < p.num_instrs; i++) {
         const Instr& ins = p.instrs[i];
         mix(uint8_t(ins.op));
@@ -106,9 +103,7 @@ void Population::init(std::mt19937& rng, const ProblemDef& p) {
     si.src2  = 0;
     si.lit.i = 0;
     si.innov = next_innovation();
-    seed.chrom_lens[0] = 1;
-    seed.num_chroms    = 1;
-    seed.num_instrs    = 1;
+    seed.num_instrs = 1;
 
     Individual seed_ind;
     seed_ind.prog = seed;

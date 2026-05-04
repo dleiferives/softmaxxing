@@ -22,32 +22,28 @@ const char* op_str(Op op) {
 }
 
 void print_program(const Program& prog) {
-    for (int ci = 0; ci < prog.num_chroms; ci++) {
-        std::cout << "  [chrom " << ci << "]\n";
-        int cs = prog.chrom_start(ci);
-        for (int ii = 0; ii < prog.chrom_lens[ci]; ii++) {
-            const Instr& ins = prog.instrs[cs + ii];
-            std::cout << "    " << op_str(ins.op) << "  r" << int(ins.dst);
-            switch (ins.op) {
-            case Op::LOADI:
-                std::cout << "  0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
-                break;
-            case Op::LOADF:
-                std::cout << "  " << ins.lit.f;
-                break;
-            case Op::BNOT: case Op::LNOT: case Op::INEG: case Op::FNEG:
-            case Op::ITF:  case Op::FTI:  case Op::MOV:
-                std::cout << "  r" << int(ins.src1);
-                break;
-            default: // binary
-                std::cout << "  r" << int(ins.src1);
-                if (ins.src2 == Program::IMM_SRC)
-                    std::cout << "  #0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
-                else
-                    std::cout << "  r" << int(ins.src2);
-                break;
-            }
-            std::cout << "\n";
+    for (int ii = 0; ii < prog.num_instrs; ii++) {
+        const Instr& ins = prog.instrs[ii];
+        std::cout << "  " << op_str(ins.op) << "  r" << int(ins.dst);
+        switch (ins.op) {
+        case Op::LOADI:
+            std::cout << "  0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
+            break;
+        case Op::LOADF:
+            std::cout << "  " << ins.lit.f;
+            break;
+        case Op::BNOT: case Op::LNOT: case Op::INEG: case Op::FNEG:
+        case Op::ITF:  case Op::FTI:  case Op::MOV:
+            std::cout << "  r" << int(ins.src1);
+            break;
+        default:
+            std::cout << "  r" << int(ins.src1);
+            if (ins.src2 == Program::IMM_SRC)
+                std::cout << "  #0x" << std::hex << uint32_t(ins.lit.i) << std::dec;
+            else
+                std::cout << "  r" << int(ins.src2);
+            break;
         }
+        std::cout << "\n";
     }
 }
