@@ -92,7 +92,6 @@ int main() {
             std::cout << "gen=" << gen
                       << "  fit=" << best.fit
                       << "  instrs=" << best.prog.num_instrs
-                      << "  species=" << pop.species.size()
                       << "  stage=" << pop.curriculum_stage
                       << "  gstag=" << pop.global_stagnation
                       << (pop.hot_burst_remaining > 0 ? "  HOT" : "")

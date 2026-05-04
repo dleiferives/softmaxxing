@@ -14,7 +14,7 @@ PNG := $(STEM)_plot.png
 all: $(BIN)
 
 $(BIN): main.cpp
-	cp $(SRC) .
+	cp $(SRC) . || true
 	$(CXX) $(CXXFLAGS) -DTARGET_CPP='"$(STEM).cpp"' -o $@ main.cpp -lm
 
 run: $(BIN)

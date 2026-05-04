@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 csv_path = sys.argv[1] if len(sys.argv) > 1 else "sweep.csv"
+name = csv_path.split(".")[0]
 
 data = np.loadtxt(csv_path, delimiter=",", skiprows=1)
 x, ref, jit = data[:, 0], data[:, 1], data[:, 2]
@@ -16,7 +17,7 @@ idx = np.unique(np.round(np.linspace(0, len(x) - 1, 5000)).astype(int))
 xs, rs, js, ep = x[idx], ref[idx], jit[idx], rel_err_pct[idx]
 
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(11, 11), sharex=True)
-fig.suptitle("Evolved approx (gen 29085, fit=0.0149) vs  1 / √x", fontsize=13, y=0.98)
+fig.suptitle(f"{name} vs  1 / √x", fontsize=13, y=0.98)
 
 # ── panel 1: value comparison, log–log ──────────────────────────────────────
 good = np.abs(ep) < 10
@@ -33,15 +34,15 @@ ax1.set_title("Function values  (log–log)", fontsize=10)
 # ── panel 2: relative error % ────────────────────────────────────────────────
 ax2.fill_betweenx([-110, 110], xs[good].min(), xs[good].max(),
                   color="tab:green", alpha=0.08)
-for level, style, label in [(1, "--", "±1 %"), (10, "-", "±10 %")]:
+for level, style, label in [(10, "-", "±10 %")]:
     ax2.axhline( level, color="gray", lw=0.8, ls=style)
     ax2.axhline(-level, color="gray", lw=0.8, ls=style, label=label if level == 1 else f"±{level} %")
 ax2.axhline(0, color="black", lw=0.8)
 ax2.semilogx(xs, ep, color="tab:blue", lw=0.9, alpha=0.9)
 ax2.set_xlabel("x")
 ax2.set_ylabel("relative error  (%)")
-ax2.set_ylim(-105, 35)
-ax2.set_yticks([-100, -75, -50, -25, -10, -1, 0, 1, 10, 25])
+ax2.set_ylim(-105, 105)
+ax2.set_yticks([-100, -75, -50, -25, 0, 25, 50, 75, 100])
 ax2.legend(fontsize=9, loc="lower right")
 ax2.grid(True, which="both", alpha=0.25)
 ax2.set_title("Relative error  (evolved − ref) / ref", fontsize=10)

@@ -79,20 +79,25 @@ void Population::eval_individual(Individual& ni, bool penalize_length) {
     }
 }
 
-void Population::sort_pop() {
-    std::sort(indivs, indivs + SIZE, [](const Individual& a, const Individual& b) {
+void Population::sort_island(Island& isl) {
+    std::sort(isl.indivs, isl.indivs + ISLAND_SIZE, [](const Individual& a, const Individual& b) {
         double ka = a.fit + 1e-6 * a.prog.num_instrs;
         double kb = b.fit + 1e-6 * b.prog.num_instrs;
         return ka < kb;
     });
 }
 
+const Individual& Population::best() const {
+    const Individual* b = &islands[0].indivs[0];
+    for (int i = 1; i < N_ISLANDS; i++)
+        if (islands[i].indivs[0].fit < b->fit) b = &islands[i].indivs[0];
+    return *b;
+}
+
 void Population::init(std::mt19937& rng, const ProblemDef& p) {
     (void)rng;
     problem = &p;
-    curriculum_stage = 0;
-
-    // Stage 0: first curriculum entry if any, otherwise full range.
+    curriculum_stage    = 0;
     current_test_inputs = make_test_inputs(p, 0, N_CASES);
 
     Program seed = {};
@@ -108,72 +113,38 @@ void Population::init(std::mt19937& rng, const ProblemDef& p) {
     Individual seed_ind;
     seed_ind.prog = seed;
     eval_individual(seed_ind);
-    for (auto& ind : indivs)
-        ind = seed_ind;
-    sort_pop();
 
-    species.clear();
-    Species s0;
-    s0.rep      = seed;
-    s0.best_fit = seed_ind.fit;
-    for (int i = 0; i < SIZE; i++) s0.members.push_back(i);
-    species.push_back(std::move(s0));
-}
-
-void Population::assign_species() {
-    for (auto& s : species) s.members.clear();
-
-    for (int i = 0; i < SIZE; i++) {
-        double best_dist = std::numeric_limits<double>::max();
-        int    best_si   = -1;
-        for (int si = 0; si < int(species.size()); si++) {
-            double d = neat_distance(indivs[i].prog, species[si].rep);
-            if (d < best_dist) { best_dist = d; best_si = si; }
-        }
-
-        bool can_create = (int(species.size()) < MAX_SPECIES) && (best_dist >= COMPAT_THRESH);
-        if (can_create) {
-            Species ns;
-            ns.rep      = indivs[i].prog;
-            ns.best_fit = indivs[i].fit;
-            ns.members.push_back(i);
-            species.push_back(std::move(ns));
-        } else {
-            species[best_si].members.push_back(i);
-        }
+    for (int ii = 0; ii < N_ISLANDS; ii++) {
+        for (auto& ind : islands[ii].indivs) ind = seed_ind;
+        islands[ii].best_fit   = seed_ind.fit;
+        islands[ii].stagnation = 0;
+        sort_island(islands[ii]);
     }
-
-    species.erase(
-        std::remove_if(species.begin(), species.end(),
-            [](const Species& s){ return s.members.empty(); }),
-        species.end());
 }
 
-int Population::select_in_species(const Species& s, std::mt19937& rng) const {
-    int n = int(s.members.size());
-    if (n == 1) return s.members[0];
-
-    int cand[SIZE], n_cand = n;
-    for (int i = 0; i < n; i++) cand[i] = s.members[i];
+int Population::select_in_island(const Island& isl, std::mt19937& rng) const {
+    int cand[ISLAND_SIZE];
+    for (int i = 0; i < ISLAND_SIZE; i++) cand[i] = i;
+    int n_cand = ISLAND_SIZE;
 
     int cases[N_CASES];
     std::iota(cases, cases + N_CASES, 0);
     std::shuffle(cases, cases + N_CASES, rng);
 
-    int next_cand[SIZE];
+    int next_cand[ISLAND_SIZE];
     for (int ci : cases) {
         if (n_cand == 1) break;
 
         float min_err = std::numeric_limits<float>::infinity();
         for (int i = 0; i < n_cand; i++)
-            min_err = std::min(min_err, indivs[cand[i]].case_err[ci]);
+            min_err = std::min(min_err, isl.indivs[cand[i]].case_err[ci]);
 
         float eps_scale = (hot_burst_remaining > 0) ? HOT_EPSILON_SCALE : 1.0f;
         float epsilon   = (min_err * 0.1f + 1e-6f) * eps_scale;
 
         int n_next = 0;
         for (int i = 0; i < n_cand; i++)
-            if (indivs[cand[i]].case_err[ci] <= min_err + epsilon)
+            if (isl.indivs[cand[i]].case_err[ci] <= min_err + epsilon)
                 next_cand[n_next++] = cand[i];
 
         if (n_next > 0) {
@@ -182,25 +153,51 @@ int Population::select_in_species(const Species& s, std::mt19937& rng) const {
         }
     }
 
-    // Among surviving candidates, prefer the shortest program.
-    // If there's a tie in length, pick uniformly among the tied shortest.
     int min_len = std::numeric_limits<int>::max();
     for (int i = 0; i < n_cand; i++)
-        min_len = std::min(min_len, int(indivs[cand[i]].prog.num_instrs));
+        min_len = std::min(min_len, int(isl.indivs[cand[i]].prog.num_instrs));
 
-    int short_cand[SIZE], n_short = 0;
+    int short_cand[ISLAND_SIZE], n_short = 0;
     for (int i = 0; i < n_cand; i++)
-        if (int(indivs[cand[i]].prog.num_instrs) == min_len)
+        if (int(isl.indivs[cand[i]].prog.num_instrs) == min_len)
             short_cand[n_short++] = cand[i];
 
     return short_cand[std::uniform_int_distribution<int>(0, n_short - 1)(rng)];
 }
 
+void Population::migrate(std::mt19937& rng) {
+    std::uniform_int_distribution<int> other_d(0, N_ISLANDS - 2);
+    for (int ii = 0; ii < N_ISLANDS; ii++) {
+        int jj = other_d(rng);
+        if (jj >= ii) jj++;
+
+        Island& src = islands[ii];
+        Island& dst = islands[jj];
+
+        const Individual& immigrant = src.indivs[0];  // best of source island
+
+        // Replace worst slot in dst with a positional cross between immigrant and dst's best.
+        Program cross = crossover_positional(immigrant.prog, immigrant.hardness,
+                                             dst.indivs[0].prog, dst.indivs[0].hardness,
+                                             rng);
+        Individual& slot_cross = dst.indivs[ISLAND_SIZE - 1];
+        slot_cross.prog     = cross;
+        slot_cross.hardness = {};
+        eval_individual(slot_cross);
+
+        // Replace second-worst slot with raw clone of immigrant.
+        dst.indivs[ISLAND_SIZE - 2] = immigrant;
+
+        sort_island(dst);
+    }
+}
+
 void Population::step(std::mt19937& rng) {
     generation++;
 
+    // --- Global stagnation + hot burst ---
     {
-        double cur_best = indivs[0].fit;
+        double cur_best = best().fit;
         if (cur_best < global_best_fit * 0.999) {
             global_best_fit     = cur_best;
             global_stagnation   = 0;
@@ -217,90 +214,6 @@ void Population::step(std::mt19937& rng) {
         if (hot_burst_remaining > 0) hot_burst_remaining--;
     }
 
-    assign_species();
-
-    if (generation % HARDEN_INTERVAL == 0) {
-        for (const auto& s : species) {
-            if (s.members.empty()) continue;
-            int champ = s.members[0];
-            for (int idx : s.members)
-                if (indivs[idx].fit < indivs[champ].fit) champ = idx;
-            indivs[champ].hardness.recompute(indivs[champ].prog, indivs[champ].fit,
-                                             *problem, current_test_inputs);
-        }
-    }
-
-    // --- Stagnation update ---
-    int eff_stag_limit = (hot_burst_remaining > 0)
-                       ? STAG_LIMIT * HOT_STAG_MULTIPLIER
-                       : STAG_LIMIT;
-
-    for (auto& s : species) {
-        double best = std::numeric_limits<double>::max();
-        for (int idx : s.members)
-            best = std::min(best, indivs[idx].fit);
-        if (best < s.best_fit * 0.999) { s.best_fit = best; s.stagnation = 0; }
-        else s.stagnation++;
-    }
-
-    // --- Cull stagnant species; always keep the one containing indivs[0] (global best) ---
-    species.erase(
-        std::remove_if(species.begin(), species.end(),
-            [&](const Species& s) {
-                if (s.stagnation < eff_stag_limit) return false;
-                for (int idx : s.members) if (idx == 0) return false;
-                return true;
-            }),
-        species.end());
-
-    int nsp = int(species.size());
-
-    // --- Score surviving species ---
-    std::vector<double> scores(nsp, 0.0);
-    double total_score = 0.0;
-    for (int si = 0; si < nsp; si++) {
-        const auto& s = species[si];
-        for (int idx : s.members)
-            scores[si] += 1.0 / (indivs[idx].fit + 1e-10);
-        scores[si] /= double(s.members.size());
-        total_score += scores[si];
-    }
-
-    if (total_score == 0.0) {
-        int best_si = 0;
-        double best_fit = std::numeric_limits<double>::max();
-        for (int si = 0; si < nsp; si++)
-            for (int idx : species[si].members)
-                if (indivs[idx].fit < best_fit) { best_fit = indivs[idx].fit; best_si = si; }
-        for (int idx : species[best_si].members)
-            scores[best_si] += 1.0 / (indivs[idx].fit + 1e-10);
-        scores[best_si] /= double(species[best_si].members.size());
-        total_score = scores[best_si];
-    }
-
-    int champion_slots  = nsp;
-    int offspring_slots = SIZE - champion_slots;
-    if (offspring_slots < 0) offspring_slots = 0;
-
-    std::vector<int> offspring(nsp, 0);
-    int assigned = 0;
-    for (int si = 0; si < nsp; si++) {
-        offspring[si] = int(scores[si] / total_score * offspring_slots);
-        assigned += offspring[si];
-    }
-    int rem = offspring_slots - assigned;
-    if (rem > 0 && nsp > 0) {
-        int best_si = 0;
-        for (int si = 1; si < nsp; si++)
-            if (scores[si] > scores[best_si]) best_si = si;
-        offspring[best_si] += rem;
-    }
-
-    Individual next[SIZE];
-    int next_count = 0;
-
-    std::uniform_real_distribution<double> coin(0.0, 1.0);
-
     bool cache_active = (global_stagnation >= GSTAG_ENABLE_CACHE);
 
     auto finalize_child = [&](Program& child, const Hardness& parent_hardness) {
@@ -308,7 +221,7 @@ void Population::step(std::mt19937& rng) {
             float fp[N_BEH];
             compute_fingerprint(child, fp, *problem);
             uint32_t h = behavior_hash(fp);
-            for (int attempt = 0; novelty_seen.count(h) && attempt < 40960; attempt++) {
+            for (int attempt = 0; novelty_seen.count(h) && attempt < 4096; attempt++) {
                 child = mutate(child, parent_hardness, rng, *problem, current_test_inputs);
                 compute_fingerprint(child, fp, *problem);
                 h = behavior_hash(fp);
@@ -317,68 +230,91 @@ void Population::step(std::mt19937& rng) {
         }
     };
 
-    for (auto& s : species) {
-        if (next_count >= SIZE || s.members.empty()) continue;
-        int champ = s.members[0];
-        for (int idx : s.members)
-            if (indivs[idx].fit < indivs[champ].fit) champ = idx;
-        next[next_count++] = indivs[champ];
-        s.rep = indivs[champ].prog;
-    }
+    // --- Evolve each island independently ---
+    std::uniform_real_distribution<double> coin(0.0, 1.0);
 
-    for (int si = 0; si < nsp && next_count < SIZE; si++) {
-        const auto& s = species[si];
-        if (s.members.empty()) continue;
-        for (int j = 0; j < offspring[si] && next_count < SIZE; j++) {
-            int p = select_in_species(s, rng);
+    for (int ii = 0; ii < N_ISLANDS; ii++) {
+        Island& isl = islands[ii];
+
+        // Per-island stagnation
+        double ibest = isl.indivs[0].fit;
+        if (ibest < isl.best_fit * 0.999) { isl.best_fit = ibest; isl.stagnation = 0; }
+        else                               { isl.stagnation++; }
+
+        // Harden champion every HARDEN_INTERVAL
+        if (generation % HARDEN_INTERVAL == 0)
+            isl.indivs[0].hardness.recompute(isl.indivs[0].prog, isl.indivs[0].fit,
+                                              *problem, current_test_inputs);
+
+        Individual next[ISLAND_SIZE];
+        int next_count = 0;
+
+        // Elitism: champion survives unchanged
+        next[next_count++] = isl.indivs[0];
+	if (cache_active && ii > 0) {
+		for (int iii=1; iii< ISLAND_SIZE * 2 / 3; iii++){
+		    next[next_count++] = isl.indivs[select_in_island(isl, rng)];
+		}
+	}
+
+	if (!cache_active) {
+		// If this island is stagnant, inject a random immigrant from another island
+		// (extra migration on top of the periodic batch migration).
+		if (isl.stagnation > 0 && isl.stagnation % ISLAND_STAG_LIMIT == 0) {
+		    int src_ii = std::uniform_int_distribution<int>(0, N_ISLANDS - 2)(rng);
+		    if (src_ii >= ii) src_ii++;
+		    if (next_count < ISLAND_SIZE) {
+			next[next_count] = islands[src_ii].indivs[0];
+			next_count++;
+		    }
+		}
+	}
+
+        while (next_count < ISLAND_SIZE) {
+            int p = select_in_island(isl, rng);
             Program child;
-            if (int(s.members.size()) == 1 || coin(rng) < MUT_RATE) {
-                child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
+            if (cache_active || coin(rng) < MUT_RATE) {
+                child = mutate(isl.indivs[p].prog, isl.indivs[p].hardness,
+                               rng, *problem, current_test_inputs);
             } else {
-                int q = select_in_species(s, rng);
-                child = crossover(indivs[p].prog, indivs[p].fit,
-                                  indivs[q].prog, indivs[q].fit, rng);
+                int q = select_in_island(isl, rng);
+                child = crossover(isl.indivs[p].prog, isl.indivs[p].fit,
+                                  isl.indivs[q].prog, isl.indivs[q].fit, rng);
             }
-            finalize_child(child, indivs[p].hardness);
+            finalize_child(child, isl.indivs[p].hardness);
             Individual& ni = next[next_count++];
             ni.prog     = child;
             ni.hardness = {};
-            eval_individual(ni, true); //!cache_active);
+            eval_individual(ni);
         }
+
+        memcpy(isl.indivs, next, sizeof(isl.indivs));
+        sort_island(isl);
     }
 
-    while (next_count < SIZE) {
-        int si = int(std::uniform_int_distribution<int>(0, nsp - 1)(rng));
-        const auto& s = species[si];
-        if (s.members.empty()) continue;
-        int p = select_in_species(s, rng);
-        Program child = mutate(indivs[p].prog, indivs[p].hardness, rng, *problem, current_test_inputs);
-        finalize_child(child, indivs[p].hardness);
-        Individual& ni = next[next_count++];
-        ni.prog     = child;
-        ni.hardness = {};
-        eval_individual(ni, true); //!cache_active);
-    }
+    // --- Periodic batch migration ---
+    if (generation % MIGRATE_INTERVAL == 0)
+        migrate(rng);
 
-    memcpy(indivs, next, sizeof(indivs));
-    sort_pop();
-
-    // Curriculum advancement: when best fitness crosses the threshold, widen
-    // each input to its next stage and recompute everyone's fitness.
+    // --- Curriculum advancement ---
     int n_stages = problem_n_stages(*problem);
     if (curriculum_stage < n_stages - 1 &&
-        indivs[0].fit < problem->curriculum_advance_thresh) {
+        best().fit < problem->curriculum_advance_thresh) {
         curriculum_stage++;
         current_test_inputs = make_test_inputs(*problem, curriculum_stage, N_CASES);
 
-        // LRU entries are stale (different test range) — clear before reeval.
         eval_lru_list.clear();
         eval_lru_map.clear();
         novelty_seen.clear();
-        for (int i = 0; i < SIZE; i++)
-            eval_individual(indivs[i]);
-        sort_pop();
-        global_best_fit     = indivs[0].fit;
+
+        for (int ii = 0; ii < N_ISLANDS; ii++) {
+            for (int i = 0; i < ISLAND_SIZE; i++)
+                eval_individual(islands[ii].indivs[i]);
+            sort_island(islands[ii]);
+            islands[ii].best_fit = islands[ii].indivs[0].fit;
+        }
+
+        global_best_fit     = best().fit;
         global_stagnation   = 0;
         hot_burst_remaining = 0;
 
@@ -387,6 +323,6 @@ void Population::step(std::mt19937& rng) {
             auto [lo, hi] = problem->inputs[j].range_at(curriculum_stage);
             std::cout << "    input[" << j << "] range=[" << lo << ", " << hi << "]\n";
         }
-        std::cout << "    best_fit=" << indivs[0].fit << "\n";
+        std::cout << "    best_fit=" << best().fit << "\n";
     }
 }

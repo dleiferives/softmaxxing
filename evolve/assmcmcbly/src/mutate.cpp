@@ -373,6 +373,131 @@ Program mutate(const Program& src, const Hardness& hardness, std::mt19937& rng,
     return m;
 }
 
+// Build a child from prefix a[0..cut_a) + suffix b[cut_b..end), fixing undefined srcs.
+static Program make_positional_child(const Program& a, const Program& b,
+                                     int cut_a, int cut_b) {
+    int plen = cut_a;
+    int slen = b.num_instrs - cut_b;
+    if (plen + slen > Program::MAX_INSTRS) slen = Program::MAX_INSTRS - plen;
+
+    Program child = {};
+    memcpy(child.instrs,        a.instrs,         plen * sizeof(Instr));
+    memcpy(child.instrs + plen, b.instrs + cut_b, slen * sizeof(Instr));
+    child.num_instrs = uint16_t(plen + slen);
+
+    bool defined[Program::NUM_REGS] = {};
+    defined[0] = true;
+    for (int i = 0; i < plen; i++)
+        defined[child.instrs[i].dst % Program::NUM_REGS] = true;
+    uint8_t fallback = (plen > 0) ? uint8_t(child.instrs[plen-1].dst % Program::NUM_REGS) : 0;
+
+    for (int i = plen; i < child.num_instrs; i++) {
+        Instr& ins = child.instrs[i];
+        bool is_leaf = (ins.op == Op::LOADI || ins.op == Op::LOADF);
+        if (!is_leaf) {
+            if (!defined[ins.src1 % Program::NUM_REGS]) ins.src1 = fallback;
+            if (ins.src2 != Program::IMM_SRC &&
+                !defined[ins.src2 % Program::NUM_REGS]) ins.src2 = fallback;
+        }
+        defined[ins.dst % Program::NUM_REGS] = true;
+    }
+    return child;
+}
+
+// Positional crossover with hardness-biased cut selection.
+//
+// Two complementary biases:
+//  1. Cut point sampling: weight cut_a by hardness of the instruction just BEFORE
+//     the cut (prefer to cut after a hard instruction, capturing it in the prefix).
+//     Weight cut_b by hardness of the instruction AT cut_b (prefer to start B's suffix
+//     right before a hard instruction, capturing it in the suffix).
+//  2. Candidate scoring: generate N_CANDS cuts (mix of biased + uniform), score each
+//     by total hardness of live inherited instructions, return the best-scoring child.
+Program crossover_positional(const Program& a, const Hardness& ha,
+                              const Program& b, const Hardness& hb,
+                              std::mt19937& rng) {
+    if (a.num_instrs == 0) return b;
+    if (b.num_instrs == 0) return a;
+
+    const int na = a.num_instrs;
+    const int nb = b.num_instrs;
+
+    // Score a candidate child: sum hardness of its live instructions,
+    // sourcing scores from the parent that contributed each instruction.
+    auto score_child = [&](const Program& child, int plen, int cut_b) -> float {
+        bool live[Program::MAX_INSTRS];
+        compute_dag(child, live);
+        float s = 0.0f;
+        for (int i = 0; i < plen; i++)
+            if (live[i]) s += ha.scores[i];
+        int slen = child.num_instrs - plen;
+        for (int i = 0; i < slen; i++)
+            if (live[plen + i]) s += hb.scores[cut_b + i];
+        return s;
+    };
+
+    // Hardness-biased cut_a: weight[i] = hardness of instr i-1 (just before cut) + epsilon.
+    // This prefers cuts that land right after a high-hardness instruction.
+    auto sample_cut_a = [&]() -> int {
+        float weights[Program::MAX_INSTRS + 1];
+        float total = 0.0f;
+        for (int i = 0; i <= na; i++) {
+            weights[i] = (i > 0 ? ha.scores[i-1] : 0.0f) + 0.5f;
+            total += weights[i];
+        }
+        float r = std::uniform_real_distribution<float>(0.0f, total)(rng);
+        for (int i = 0; i <= na; i++) { r -= weights[i]; if (r <= 0.0f) return i; }
+        return na;
+    };
+
+    // Hardness-biased cut_b: weight[j] = hardness of instr j (start of suffix) + epsilon.
+    // This prefers starting B's suffix right before a high-hardness instruction.
+    auto sample_cut_b = [&]() -> int {
+        float weights[Program::MAX_INSTRS + 1];
+        float total = 0.0f;
+        for (int j = 0; j <= nb; j++) {
+            weights[j] = (j < nb ? hb.scores[j] : 0.0f) + 0.5f;
+            total += weights[j];
+        }
+        float r = std::uniform_real_distribution<float>(0.0f, total)(rng);
+        for (int j = 0; j <= nb; j++) { r -= weights[j]; if (r <= 0.0f) return j; }
+        return nb;
+    };
+
+    static constexpr int N_CANDS = 5;
+    Program best_child = {};
+    float   best_score = -1.0f;
+    bool    have_best  = false;
+
+    for (int k = 0; k < N_CANDS; k++) {
+        int cut_a, cut_b;
+        if (k < 3) {
+            // Hardness-biased candidates
+            cut_a = sample_cut_a();
+            cut_b = sample_cut_b();
+        } else {
+            // Uniform random candidates for diversity
+            cut_a = std::uniform_int_distribution<int>(0, na)(rng);
+            cut_b = std::uniform_int_distribution<int>(0, nb)(rng);
+        }
+
+        int plen = cut_a;
+        int slen = nb - cut_b;
+        if (plen + slen <= 0 || plen + slen > Program::MAX_INSTRS) continue;
+
+        Program cand  = make_positional_child(a, b, cut_a, cut_b);
+        float   score = score_child(cand, plen, cut_b);
+        if (!have_best || score > best_score) {
+            best_score = score;
+            best_child = cand;
+            have_best  = true;
+        }
+    }
+
+    if (!have_best) return (na >= nb) ? a : b;
+    return best_child;
+}
+
 // Innovation-aligned crossover (NEAT-style).
 // The fitter parent's structure is the backbone. At each instruction, if the
 // weaker parent carries the same innovation number, 40% chance to swap in its fields.
