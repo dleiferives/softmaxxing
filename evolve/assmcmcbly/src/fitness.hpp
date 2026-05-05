@@ -4,7 +4,7 @@
 #include <vector>
 #include <chrono>
 
-static constexpr int N_CASES = 500;
+static constexpr int N_CASES = 200;
 
 // Evaluates prog on test_inputs. Fills case_err[N_CASES] with per-case squared
 // relative error. Returns aggregate MSRE + penalties.

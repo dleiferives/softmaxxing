@@ -63,7 +63,7 @@ double fitness_and_cases(const Program& prog,
     if (std::isfinite(out_min) && out_max - out_min < 0.01f)
         msre += 10.0;
 	
-    msre += msre * 0.04 * prog.num_instrs;
+    msre += (msre * prog.num_instrs) * 0.001;
         auto end = std::chrono::steady_clock::now();
         fitness_duration += end-start;
         fitness_calls++;
