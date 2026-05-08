@@ -2,6 +2,12 @@
 
 Symbolic regression search for algebraic approximations to the incremental online softmax update — the inner loop of attention in transformer models.
 
+## TL;DR
+
+**3-5x** speedup across the board on CPU.
+~8% speedup on GPU.
+
+
 ## The Problem
 
 At each step of online attention, incorporating a new logit `x` into a running max `m` and running sum `s` requires:
