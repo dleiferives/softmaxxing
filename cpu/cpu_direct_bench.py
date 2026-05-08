@@ -19,7 +19,8 @@ import argparse, re
 import pandas as pd
 from pathlib import Path
 
-HERE = Path(__file__).parent.resolve()
+HERE      = Path(__file__).parent.resolve()
+REPO_ROOT = HERE.parent
 
 parser = argparse.ArgumentParser()
 parser.add_argument("dir",             help="output directory for generated benchmarks")
@@ -42,8 +43,9 @@ if args.csv:
 else:
     candidates = [
         ROOT / "hall_of_fame.csv",
-        HERE / "equation_features.csv",
+        HERE / "cpu_direct_features.csv",
         HERE / "cpu_equation_features.csv",
+        REPO_ROOT / "gpu" / "equation_features.csv",
     ]
     CSV_FILE = next((p for p in candidates if p.exists()), None)
     if CSV_FILE is None:

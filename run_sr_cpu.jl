@@ -15,29 +15,29 @@ const REFRESH_FRAC  = 0.15
 const N_OUTER       = 100_000
 const SAVE_EVERY    = 30
 
-# Small speed nudge — only differentiates at the accuracy frontier.
-# Keeps MAE as the dominant signal; this just breaks ties toward faster forms.
-# Features (from feature/throughput correlation analysis at ±30% loss threshold):
-#   penalise: deep x occurrences, high variance in var depths, const-heavy leaves
-#   penalise: many distinct operator types
-# Weight chosen so the penalty is <5% of a typical good-equation MAE (~0.003).
-const SPEED_WEIGHT = 2f-4
+# CPU speed penalty weight.
+# Stronger than GPU version (2e-4) because CPU throughput is the goal and we
+# have solid empirical evidence that tree size dominates CPU speed.
+# Weight is ~10% of typical good-equation MAE (~0.001) so accuracy still leads.
+const CPU_SPEED_WEIGHT = 1f-4
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── tree feature helpers ──────────────────────────────────────────────────────
-# Variable indices: 1=m, 2=s, 3=x
+# ── tree helpers ──────────────────────────────────────────────────────────────
+# Variable indices: 1=m, 2=s, 3=x  (matches variable_names = ["m","s","x"])
+# Operator indices: 1=+, 2=-, 3=*, 4=>  (binary_operators = [+,-,*,>])
 
-# Collect depths of all variable leaves (any feature) into `depths`.
-function _collect_var_depths!(node, depth::Int, depths::Vector{Float32})
-    if node.degree == 0
-        node.constant || push!(depths, Float32(depth))
-        return
-    end
-    _collect_var_depths!(node.l, depth + 1, depths)
-    node.degree == 2 && _collect_var_depths!(node.r, depth + 1, depths)
+function _count_nodes(node)::Int
+    node.degree == 0 && return 1
+    node.degree == 1 && return 1 + _count_nodes(node.l)
+    return 1 + _count_nodes(node.l) + _count_nodes(node.r)
 end
 
-# Collect depths of occurrences of a specific feature index.
+function _count_op!(node, op_idx::Int, acc::Ref{Int})
+    node.degree == 0 && return
+    node.degree >= 1 && (node.op == op_idx && (acc[] += 1); _count_op!(node.l, op_idx, acc))
+    node.degree == 2 && _count_op!(node.r, op_idx, acc)
+end
+
 function _collect_feat_depths!(node, feat::Int, depth::Int, depths::Vector{Float32})
     if node.degree == 0
         (!node.constant && node.feature == feat) && push!(depths, Float32(depth))
@@ -47,16 +47,15 @@ function _collect_feat_depths!(node, feat::Int, depth::Int, depths::Vector{Float
     node.degree == 2 && _collect_feat_depths!(node.r, feat, depth + 1, depths)
 end
 
-# Count (n_var_leaves, n_const_leaves).
-function _count_leaf_types(node)
-    node.degree == 0 && return node.constant ? (0, 1) : (1, 0)
-    lv, lc = _count_leaf_types(node.l)
-    node.degree == 1 && return (lv, lc)
-    rv, rc = _count_leaf_types(node.r)
-    return (lv + rv, lc + rc)
+function _collect_var_depths!(node, depth::Int, depths::Vector{Float32})
+    if node.degree == 0
+        node.constant || push!(depths, Float32(depth))
+        return
+    end
+    _collect_var_depths!(node.l, depth + 1, depths)
+    node.degree == 2 && _collect_var_depths!(node.r, depth + 1, depths)
 end
 
-# Count distinct operator indices used anywhere in the tree.
 function _collect_ops!(node, ops::Set{Int})
     node.degree == 0 && return
     push!(ops, node.op)
@@ -64,13 +63,11 @@ function _collect_ops!(node, ops::Set{Int})
     node.degree == 2 && _collect_ops!(node.r, ops)
 end
 
-# Count x*x-style products (x appears on both sides of a multiply).
-# Proxy for polynomial degree in x — higher degree correlates with faster kernels.
 function _count_x_products(node, feat::Int = 3)
     node.degree == 0 && return 0
     node.degree == 1 && return _count_x_products(node.l, feat)
     c = _count_x_products(node.l, feat) + _count_x_products(node.r, feat)
-    if node.degree == 2 && node.op == 3   # op index 3 = * (binary_operators = [+,-,*,>])
+    if node.degree == 2 && node.op == 3
         l_has = _subtree_has_feat(node.l, feat)
         r_has = _subtree_has_feat(node.r, feat)
         l_has && r_has && (c += 1)
@@ -84,43 +81,43 @@ function _subtree_has_feat(node, feat::Int)
         (node.degree == 2 && _subtree_has_feat(node.r, feat))
 end
 
+# ── CPU speed penalty ─────────────────────────────────────────────────────────
+# Returns score in [0, 1]. Higher = predicted slower on CPU.
+#
+# Empirical basis (cpu/analyze_cpu_direct.py, correlations with f32_gcps):
+#   tree_height        r = -0.191  deep trees -> long dep chains -> less ILP
+#   all_var_depth_std  r = -0.210  unbalanced variable layout -> irregular SIMD
+#   x_avg_depth        r = -0.186  x buried deep -> late values -> stalls
+#   n_nodes: light penalty (theoretical: more ops = more cycles)
+#   x^2 bonus: polynomial structure with x*x -> better ILP
 
-# ── speed penalty ─────────────────────────────────────────────────────────────
-# Returns a score in roughly [0, 1]. Higher = predicted slower.
-# Each sub-term is normalised so it saturates near 1 for "very bad" values.
-
-function speed_penalty(tree_or_expr)::Float32
+function cpu_speed_penalty(tree_or_expr)::Float32
+    # Newer SR wraps Node in Expression; unwrap to get the raw Node tree.
     tree = hasproperty(tree_or_expr, :degree) ? tree_or_expr : tree_or_expr.tree
-    # ── Feature 1: average depth of x occurrences (r = -0.59) ────────────────
+
+    function _height(n)::Int
+        n.degree == 0 && return 0
+        n.degree == 1 && return 1 + _height(n.l)
+        return 1 + max(_height(n.l), _height(n.r))
+    end
+    h = Float32(_height(tree))
+
     x_depths = Float32[]
     _collect_feat_depths!(tree, 3, 0, x_depths)
     x_avg_depth = isempty(x_depths) ? 0f0 : mean(x_depths)
 
-    # ── Feature 2: std of all variable depths (r = -0.47) ────────────────────
     all_depths = Float32[]
     _collect_var_depths!(tree, 0, all_depths)
-    var_depth_std = length(all_depths) > 1 ? std(all_depths) : 0f0
+    depth_std = length(all_depths) > 1 ? std(all_depths) : 0f0
 
-    # ── Feature 3: fraction of leaves that are constants (r = -0.56) ─────────
-    n_var, n_const = _count_leaf_types(tree)
-    n_leaves = n_var + n_const
-    frac_const = n_leaves > 0 ? Float32(n_const / n_leaves) : 0.5f0
-
-    # ── Feature 4: number of distinct operator types (r = -0.44) ─────────────
-    ops = Set{Int}()
-    _collect_ops!(tree, ops)
-    n_ops = Float32(length(ops))
-
-    # ── Feature 5: x polynomial degree proxy (r = +0.40 → reward) ────────────
+    n    = Float32(_count_nodes(tree))
     x_sq = Float32(_count_x_products(tree))
-    x_poly_bonus = min(x_sq / 2f0, 1f0)   # saturates at 2 x-products
 
-    # ── Weighted combination ──────────────────────────────────────────────────
-    score = 0.28f0 * min(x_avg_depth  / 8f0, 1f0)   # x depth penalty
-          + 0.20f0 * min(var_depth_std / 4f0, 1f0)   # depth variance penalty
-          + 0.30f0 * frac_const                        # const-leaf penalty
-          + 0.14f0 * min(n_ops        / 5f0, 1f0)    # op-variety penalty
-          - 0.08f0 * x_poly_bonus                     # x² reward
+    score = 0.30f0 * min(h           / 12f0, 1f0)   # height (r = -0.191)
+          + 0.30f0 * min(depth_std   /  4f0, 1f0)   # imbalance (r = -0.210)
+          + 0.25f0 * min(x_avg_depth /  8f0, 1f0)   # x depth (r = -0.186)
+          + 0.15f0 * min(n           / 40f0, 1f0)   # size (theoretical)
+          - 0.05f0 * min(x_sq        /  2f0, 1f0)   # x^2 bonus
 
     return max(score, 0f0)
 end
@@ -131,10 +128,10 @@ function custom_loss(tree, dataset, options)
     prediction, is_valid = eval_tree_array(tree, dataset.X, options)
     !is_valid && return Inf32
     mae = mean(abs.(prediction .- dataset.y))
-    return mae + SPEED_WEIGHT * speed_penalty(tree)
+    return mae + CPU_SPEED_WEIGHT * cpu_speed_penalty(tree)
 end
 
-# ── boilerplate (unchanged from run_sr.jl) ────────────────────────────────────
+# ── boilerplate ───────────────────────────────────────────────────────────────
 
 function make_run_dir()
     stamp = Dates.format(now(), "yyyymmdd_HHMMSS")
@@ -170,7 +167,7 @@ function refresh(X::Matrix{Float32}, y::Vector{Float32})
 end
 
 function save_state(result, run_dir::String, iter::Int)
-    tag  = iter < 0 ? "final" : lpad(iter, 6, '0')
+    tag = iter < 0 ? "final" : lpad(iter, 6, '0')
     serialize(joinpath(run_dir, "model_$(tag).jls"), result)
 end
 
@@ -178,7 +175,7 @@ function save_hof(result, run_dir::String, iter::Int, options)
     hof        = result[2]
     dominating = calculate_pareto_frontier(hof)
     isempty(dominating) && return nothing
-    tag  = iter < 0 ? "final" : lpad(iter, 6, '0')
+    tag = iter < 0 ? "final" : lpad(iter, 6, '0')
     open(joinpath(run_dir, "hof_$(tag).csv"), "w") do f
         println(f, "complexity,loss,equation")
         for m in dominating
@@ -197,10 +194,10 @@ const RST   = "\e[0m"
 
 function print_header(run_dir::String)
     println(BOLD * "━"^64 * RST)
-    println(BOLD * "  SymbolicRegression  —  softmax + speed-aware loss" * RST)
+    println(BOLD * "  SymbolicRegression  —  CPU-throughput-guided search" * RST)
     println("  run dir    : " * CYAN * run_dir * RST)
     println("  dataset    : $(DATASET_SIZE) rows | refresh $(Int(REFRESH_FRAC*100))% every $(REFRESH_EVERY) iters")
-    println("  speed_weight: $(SPEED_WEIGHT)  (x_depth, var_depth_std, frac_const, n_ops, -x_poly)")
+    println("  cpu_speed_weight: $(CPU_SPEED_WEIGHT)  (size×0.50, greater×0.25, x_depth×0.15, ops×0.10)")
     println("  saving     : every $(SAVE_EVERY) iters + on Ctrl-C")
     println(BOLD * "━"^64 * RST)
 end
@@ -218,7 +215,7 @@ function print_status(i::Int, result, refreshed::Bool, saved::Bool)
     best = last(dominating)
     print(CLR *
           BOLD * @sprintf("iter %6d", i) * RST * "  " *
-          @sprintf("loss=%.4g", best.loss) * "  " *
+          @sprintf("loss=%.4g  spd=%.3f", best.loss, cpu_speed_penalty(best.tree)) * "  " *
           CYAN * string(best.tree) * RST *
           tags)
 end
@@ -234,8 +231,8 @@ function print_final(result, run_dir::String, options)
     else
         for m in dominating
             c = compute_complexity(m, options)
-            @printf("  [%2d]  loss=%-12.5g  spd=%.3f  %s\n",
-                    c, m.loss, speed_penalty(m.tree), m.tree)
+            @printf("  [%2d]  loss=%-12.5g  cpu_spd=%.3f  %s\n",
+                    c, m.loss, cpu_speed_penalty(m.tree), m.tree)
         end
     end
     println(BOLD * "━"^64 * RST)
@@ -249,7 +246,7 @@ function main()
     options = Options(
         binary_operators = [+, -, *, >],
         unary_operators  = [abs],
-        maxsize          = 40,
+        maxsize          = 35,           # tighter than GPU (40) → smaller trees → faster CPU
         loss_function    = custom_loss,
         batching         = true,
         batch_size       = 1000,

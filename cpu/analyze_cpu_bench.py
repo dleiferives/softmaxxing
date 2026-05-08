@@ -16,12 +16,13 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-HERE = Path(__file__).parent.resolve()
+HERE      = Path(__file__).parent.resolve()
+REPO_ROOT = HERE.parent
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--results",    default=str(HERE / "cpu_bench_results.csv"))
-parser.add_argument("--features",   default=str(HERE / "equation_features.csv"),
-                    help="CSV with pre-computed structural features (from analyze_bench.py)")
+parser.add_argument("--features",   default=str(HERE.parent / "gpu" / "equation_features.csv"),
+                    help="CSV with structural features (from gpu/analyze_bench.py)")
 parser.add_argument("--threshold",  type=float, default=0.30,
                     help="keep equations within this fraction above min loss (default 0.30)")
 parser.add_argument("--top",        type=int,   default=20,

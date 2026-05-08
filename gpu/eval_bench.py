@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from pathlib import Path
 
-HERE = Path(__file__).parent.resolve()
+HERE      = Path(__file__).parent.resolve()
+REPO_ROOT = HERE.parent
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -53,9 +54,9 @@ OUTPUT_RE = re.compile(
 )
 
 def find_dirs() -> list[Path]:
-    outputs = HERE / "outputs"
+    outputs = REPO_ROOT / "outputs"
     if not outputs.exists():
-        sys.exit(f"No outputs/ directory found under {HERE}")
+        sys.exit(f"No outputs/ directory found under {REPO_ROOT}")
     return sorted(p for p in outputs.iterdir() if p.is_dir() and (p / "hall_of_fame.csv").exists())
 
 

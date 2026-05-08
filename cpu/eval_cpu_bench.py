@@ -17,18 +17,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import pandas as pd
 
-HERE = Path(__file__).parent.resolve()
+HERE      = Path(__file__).parent.resolve()
+REPO_ROOT = HERE.parent
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--source",  default=str(HERE / "equation_features.csv"),
-                    help="CSV with equations (default: equation_features.csv)")
+parser.add_argument("--source",  default=str(HERE.parent / "gpu" / "equation_features.csv"),
+                    help="CSV with equations (default: gpu/equation_features.csv)")
 parser.add_argument("--col",     default="equation",
                     help="column name for the equation string (default: equation)")
 parser.add_argument("--loss-col", default="loss",
                     help="column name for loss (default: loss)")
 parser.add_argument("--results", default=str(HERE / "cpu_bench_results.csv"),
                     help="output CSV (default: cpu_bench_results.csv)")
-parser.add_argument("--data",    default=str(HERE / "softmax_incremental.csv"),
+parser.add_argument("--data",    default=str(REPO_ROOT / "softmax_incremental.csv"),
                     help="dataset CSV with m,s,x,s_new columns")
 parser.add_argument("--outer",   type=int, default=2000,
                     help="timing iterations over full dataset (default 2000)")
@@ -266,7 +267,7 @@ def main():
 
     print(f"Benchmarking {len(pending)} equation(s)  [outer={OUTER}, workers={args.workers}]")
 
-    build_dir = HERE / "cpu_bench_build"
+    build_dir = REPO_ROOT / "cpu_bench_build"
     build_dir.mkdir(exist_ok=True)
 
     # Write shared data header once
